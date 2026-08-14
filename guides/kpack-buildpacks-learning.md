@@ -342,24 +342,160 @@ luban-ci/buildpacks/python-uv/    ← component buildpack
 └── bin/
     ├── detect          ← 搵 pyproject.toml / uv.lock / .python-version
     ├── build           ← 安裝 uv + Python + uv sync + dbt
-    └── parse_config.py ← 解析 pyproject.toml entry points
-
-Build script 嘅關鍵步驟:
-  1. 安裝 uv (version managed + SHA256 checksum)
-  2. 安裝 Python (via uv)
-  3. uv sync --frozen (裝 dependencies)
-  4. 偵測 dbt project → 跑 dbt deps + parse
-  5. 自動偵測 entry point (pyproject.toml scripts)
-  6. 支援 Service Binding (private mirror netrc + CA cert)
+    └── parse_config.py ← 解析 pyproject.toml entry points (額外加嘅)
 ```
 
-**為咩 Luban CI 要自己寫？** 因為 Paketo 嘅 Python buildpack 唔支援 `uv`：
+#### 為咩 Luban CI 要自己寫？
+
+因為 Paketo 嘅 Python buildpack 唔支援 `uv`：
 ```
 Paketo Python buildpack:  ✓ pip / poetry / pipenv  ✗ uv
 Luban CI python-uv:       ✓ uv (快 10-100 倍)
 ```
 
-**你可以用 Composite Buildpack 組合 Luban CI + Paketo：**
+#### parse_config.py 嘅作用
+
+`parse_config.py` 係 Luban CI **額外加嘅 helper script**，唔係 CNB spec 要求嘅。
+
+```
+CNB Spec 只要求:
+  ✓ bin/detect 存在
+  ✓ bin/build 存在
+  ✓ 輸出 launch.toml (定義 process)
+
+CNB Spec 唔要求:
+  ✗ 你要跑邊個 script
+  ✗ 你要點解析 config
+  ✗ 你要用咩 language 寫
+```
+
+**`parse_config.py` 做咩：**
+```python
+# 讀 /workspace/pyproject.toml (你嘅 app config)
+# 搵 [project.scripts] 入面嘅 entry point
+# 輸出: MODE=standard, SCRIPT_NAME=app
+
+# 例如你嘅 pyproject.toml:
+[project.scripts]
+app = "my_app:main"
+
+# parse_config.py 輸出:
+MODE=standard
+SCRIPT_NAME=app
+```
+
+**點解需要佢？** 因為 bash 冇 TOML parser：
+```
+Paketo (Go 寫嘅 buildpack):
+  → Go 內建 TOML parser
+  → 直接喺 Go code 入面解析 pyproject.toml
+  → 冇額外 script
+
+Luban CI (bash 寫嘅 buildpack):
+  → bash 唔識讀 TOML
+  → 要用 Python (tomllib) 解析
+  → 所以寫咗 parse_config.py
+  → build script 再 eval 佢嘅輸出
+```
+
+#### parse_config.py 點被打包入 buildpackage？
+
+```
+源碼目錄:
+luban-ci/buildpacks/python-uv/
+├── bin/
+│   ├── detect
+│   ├── build
+│   └── parse_config.py    ← 佢喺度
+
+打包命令:
+pack buildpack package your-registry/luban-ci/python-uv \
+  --path . \
+  --format image
+
+pack CLI 自動做:
+  1. 讀 bin/ 目錄入面所有檔案
+  2. detect + build + parse_config.py 全部打包入去
+  3. 組合成一個 docker image
+  4. push 到 registry
+
+結果:
+your-registry/luban-ci/python-uv (docker image)
+└── /buildpacks/python-uv/
+    └── bin/
+        ├── detect
+        ├── build
+        └── parse_config.py    ← 喺 image 入面
+```
+
+#### parse_config.py 點被執行？
+
+**`bin/build` 入面自己寫嘅，冇任何 config 指定：**
+
+```bash
+# bin/build 入面，其中一步:
+
+PYTHON_BIN=".venv/bin/python"
+PARSE_SCRIPT="$CNB_BUILDPACK_DIR/bin/parse_config.py"
+
+# 跑佢
+PARSED_OUTPUT=$($PYTHON_BIN "$PARSE_SCRIPT")
+eval "$PARSED_OUTPUT"
+
+# eval 之後:
+# $MODE = "standard"
+# $SCRIPT_NAME = "app"
+
+# 然後用呢啲值寫 launch.toml
+```
+
+**因果關係：**
+```
+1. bin/build 入面寫咗要跑 parse_config.py
+2. 所以 build 嘅時候會執行佢
+3. parse_config.py 讀 /workspace/pyproject.toml
+4. 輸出 MODE + SCRIPT_NAME
+5. eval 之後有值
+6. 用呢啲值寫 launch.toml
+7. 最終 image 入面跑你嘅 app
+```
+
+#### 完整嘅 Build Flow
+
+```
+你嘅 Git Repo (GitHub)
+┌─────────────────────────────┐
+│ my-python-app/              │
+│ ├── pyproject.toml          │ ← parse_config 讀呢個
+│ ├── uv.lock                 │
+│ └── src/my_app/main.py      │
+└─────────────┬───────────────┘
+              │ git clone
+              ▼
+Build Pod /workspace/
+┌─────────────────────────────┐
+│ /workspace/                 │
+│ ├── pyproject.toml          │ ← 同一份，copy 咗過嚟
+│ ├── uv.lock                 │
+│ └── src/my_app/main.py      │
+└─────────────┬───────────────┘
+              │ bin/build 執行
+              ▼
+┌─────────────────────────────┐
+│ 1. 安裝 uv                  │
+│ 2. 安裝 Python              │
+│ 3. uv sync                  │
+│ 4. python parse_config.py   │ ← 讀 pyproject.toml
+│    → MODE=standard          │
+│    → SCRIPT_NAME=app        │
+│ 5. 寫 launch.toml           │
+└─────────────┬───────────────┘
+              │
+              ▼
+OCI Image (可以 run)
+```
+
+#### 你可以用 Composite Buildpack 組合 Luban CI + Paketo
 
 ```toml
 # com.mycompany/python-suite (composite)
