@@ -56,34 +56,263 @@ Buildpack 係一組 **executable scripts + metadata**，打包成一個 docker i
 
 佢嘅工作：**自動 detect 你嘅 app 語言，然後 build 成 OCI image**。
 
-### 2.1 Buildpack 入面有咩？
+### 2.1 兩種 Buildpack
+
+| 類型 | 包含 | 作用 | 類比 |
+|------|------|------|------|
+| **Component** | buildpack.toml + bin/detect + bin/build | 真正做 detect + build | 工人 (識砌牆) |
+| **Composite** | 只有 buildpack.toml + order | 定義 buildpack 組合順序 | 圖紙 (定義用邊個工人) |
+
+#### Component Buildpack (有 scripts)
 
 ```
-my-buildpack/
-├── buildpack.toml     ← metadata (id, version, 兼容嘅 stack)
+paketo-buildpacks/gradle/        ← component buildpack
+├── buildpack.toml                ← metadata
 └── bin/
-    ├── detect         ← 偵測腳本
-    └── build          ← 建構腳本
+    ├── detect                    ← 搵 build.gradle / gradlew
+    └── build                     ← 安裝 Gradle + run build
 ```
 
-### 2.2 兩種 Buildpack
+#### Composite Buildpack (冇 scripts，只有 order)
 
-| 類型 | 包含 | 作用 |
-|------|------|------|
-| Component Buildpack | bin/detect + bin/build | 真正做 detect + build |
-| Composite Buildpack | 只有 buildpack.toml + order | 定義 buildpack 組合順序 |
+```
+paketo-buildpacks/java/          ← composite buildpack
+├── buildpack.toml                ← 只有呢個，冇 bin/ directory
+│   order:
+│   - group: [bellsoft-liberica, gradle, syft, spring-boot]
+│   - group: [bellsoft-liberica, maven, syft, spring-boot]
+│
+└── (冇 bin/ directory)
+```
 
-### 2.3 Detection Phase
+**Composite 唔係 "集合"，係 "配方"** — 只係列出 "用邊啲 component buildpacks、咩順序"，入面冇任何 code。
+
+### 2.2 Composite vs Component 嘅分別
+
+```
+                    Component Buildpack    Composite Buildpack
+────────────────────────────────────────────────────────────
+有 bin/detect       ✓                      ✗
+有 bin/build        ✓                      ✗
+有 buildpack.toml   ✓                      ✓
+有 order definition ✗ (喺 builder.toml)    ✓
+做 detect           ✓ (真正跑 script)       ✗ (只定義組合)
+做 build            ✓ (真正跑 script)       ✗ (只定義組合)
+檔案大小            幾 MB (有 code)        幾 KB (只有 toml)
+```
+
+### 2.3 Composite 嘅真實例子
+
+#### Paketo Java (composite) — 22 個 component buildpacks
+
+```toml
+# buildpack.toml — 呢個就係全部，冇 bin/
+
+api = "0.7"
+
+[buildpack]
+id = "paketo-buildpacks/java"
+name = "Paketo Buildpack for Java"
+keywords = ["java", "composite"]    # ← 標記咗係 composite
+
+# 一個 group，22 個 component buildpacks
+[[order]]
+  [[order.group]]
+  id = "paketo-buildpacks/ca-certificates"
+  optional = true
+  version = "3.12.6"
+
+  [[order.group]]
+  id = "paketo-buildpacks/bellsoft-liberica"     # JDK
+  version = "11.8.2"
+
+  [[order.group]]
+  id = "paketo-buildpacks/gradle"
+  optional = true
+  version = "8.7.3"
+
+  [[order.group]]
+  id = "paketo-buildpacks/maven"
+  optional = true
+  version = "6.24.1"
+
+  [[order.group]]
+  id = "paketo-buildpacks/syft"                   # SBOM
+  optional = true
+  version = "2.39.0"
+
+  [[order.group]]
+  id = "paketo-buildpacks/spring-boot"
+  optional = true
+  version = "5.36.6"
+
+  [[order.group]]
+  id = "paketo-buildpacks/executable-jar"
+  optional = true
+  version = "6.15.6"
+
+  [[order.group]]
+  id = "paketo-buildpacks/procfile"
+  optional = true
+  version = "5.13.6"
+
+  # ... 省略其他 14 個 optional buildpacks
+```
+
+#### Paketo Node.js (composite) — 三個 group
+
+```toml
+api = "0.7"
+
+[buildpack]
+id = "paketo-buildpacks/nodejs"
+name = "Paketo Buildpack for Node.js"
+
+# Group 1: yarn + node (有 yarn.lock 時用)
+[[order]]
+  [[order.group]]
+  id = "paketo-buildpacks/node-engine"
+  version = "8.5.0"
+
+  [[order.group]]
+  id = "paketo-buildpacks/yarn"
+  version = "2.4.0"
+
+  [[order.group]]
+  id = "paketo-buildpacks/yarn-install"
+  version = "2.7.24"
+
+  [[order.group]]
+  id = "paketo-buildpacks/yarn-start"
+  optional = true
+  version = "2.5.30"
+
+# Group 2: npm + node (有 package.json 時用)
+[[order]]
+  [[order.group]]
+  id = "paketo-buildpacks/node-engine"
+  version = "8.5.0"
+
+  [[order.group]]
+  id = "paketo-buildpacks/npm-install"
+  version = "2.3.29"
+
+  [[order.group]]
+  id = "paketo-buildpacks/npm-start"
+  optional = true
+  version = "2.5.0"
+
+# Group 3: 純 node (冇 package manager 時用)
+[[order]]
+  [[order.group]]
+  id = "paketo-buildpacks/node-engine"
+  version = "8.5.0"
+
+  [[order.group]]
+  id = "paketo-buildpacks/node-start"
+  version = "2.7.0"
+```
+
+#### Detection 流程 (Node.js)
+
+```
+你嘅 app 有 yarn.lock?
+  │
+  ├─ Yes → Group 1: [node-engine, yarn, yarn-install] → pass ✅
+  │
+  └─ No → Group 2: [node-engine, npm-install]
+            │
+            ├─ 有 package.json? → pass ✅
+            │
+            └─ No → Group 3: [node-engine, node-start]
+                      │
+                      ├─ 有 JS files? → pass ✅
+                      └─ No → fail ❌
+```
+
+### 2.4 Buildpack ID — 自己定義嘅名
+
+Buildpack ID 係你自己定義嘅，冇人幫你註冊，冇 registry。
+
+```
+格式: 任意字串 (但有慣例)
+慣例: 反向域名 + 名稱
+
+Paketo:       paketo-buildpacks/java
+Google:       google-buildpacks/python
+Luban CI:     luban-ci/python-uv
+你自己:       com.yourcompany/my-buildpack
+```
+
+**唯一性靠三個嘢加埋：**
+```
+ID + version + image location = 唯一
+
+例如:
+  ID:      paketo-buildpacks/java
+  Version: 11.8.2
+  Image:   gcr.io/paketo-buildpacks/java@sha256:abc123
+```
+
+### 2.5 TOML — Buildpack 嘅設定檔格式
+
+Buildpack 用 TOML (Tom's Obvious, Minimal Language) 做設定檔。
+
+#### 基本語法
+
+```toml
+# Key-value
+name = "My Buildpack"
+version = "1.0.0"
+debug = true
+
+# Table (物件)
+[buildpack]
+id = "com.example/my-bp"
+version = "1.0.0"
+
+# Array of Tables (陣列)
+[[order]]
+  [[order.group]]
+  id = "com/example/gradle"
+
+  [[order.group]]
+  id = "com/example/syft"
+```
+
+#### TOML vs YAML vs JSON
+
+```
+YAML  = 用縮排 (indentation) 表示層級
+JSON  = 用大括號 {} 表示物件，用方括號 [] 表示陣列
+TOML  = 用 [table] 表示物件，用 [[array]] 表示陣列
+```
+
+#### 你會見到 TOML 嘅地方
+
+```
+buildpack.toml     ← buildpack 嘅 metadata
+builder.toml       ← builder 嘅配置
+package.toml       ← 打包配置
+project.toml       ← 項目 descriptor
+Cargo.toml         ← Rust 嘅 package manager
+pyproject.toml     ← Python 嘅 project config
+```
+
+### 2.6 Detection Phase
 
 Buildpack 嘅 `detect` script 會掃你嘅 source code：
 
 ```
 Java buildpack:    搵 pom.xml / build.gradle → pass
-Node.js buildpack: 搵 package.json → pass
+Node.js buildpack: 搵 package.json / yarn.lock → pass
 Python buildpack:  搵 requirements.txt / pyproject.toml / uv.lock → pass
+Go buildpack:      搵 go.mod → pass
+Ruby buildpack:    搵 Gemfile → pass
+PHP buildpack:     搵 composer.json → pass
 ```
 
-### 2.4 Build Phase
+### 2.7 Build Phase
 
 `build` script 會：
 1. 安裝 runtime (JDK, Node.js, etc.)
@@ -93,34 +322,68 @@ Python buildpack:  搵 requirements.txt / pyproject.toml / uv.lock → pass
 5. 定義 process type (web, worker, etc.)
 6. 產出 OCI image layers
 
-### 2.5 Layer 機制
+### 2.8 Layer 機制
 
 ```
-launch layer  → 喺最終 OCI image 入面
-build layer   → 只存在喺 build 環境，build 完就丟
-cache layer   → 存喺 build cache，下次 build 可以 restore
+launch layer  → 喺最終 OCI image 入面 (runtime + dependencies)
+build layer   → 只存在喺 build 環境，build 完就丟 (編譯工具)
+cache layer   → 存喺 build cache，下次 build 可以 restore (npm cache)
 ```
 
-### 2.6 Luban CI 嘅 Buildpack 做法
+### 2.9 Luban CI 嘅 Buildpack 做法
 
-Luban CI 寫咗一個 `python-uv` buildpack，支援 `uv` (超快 Python package manager)：
+Luban CI 寫咗一個 `python-uv` buildpack (component)，支援 `uv` (超快 Python package manager)：
 
 ```
-Luban CI python-uv buildpack:
-  detect: 搵 pyproject.toml / uv.lock / .python-version
-  build:
-    1. 安裝 uv (version managed + checksum 校驗)
-    2. 安裝 Python (via uv)
-    3. uv sync --frozen (裝 dependencies)
-    4. 偵測 dbt project → 跑 dbt deps + parse
-    5. 自動偵測 entry point (pyproject.toml scripts)
-    6. 支援 Service Binding (private mirror netrc + CA cert)
+luban-ci/buildpacks/python-uv/    ← component buildpack
+├── buildpack.toml
+├── package.toml
+├── README.md
+└── bin/
+    ├── detect          ← 搵 pyproject.toml / uv.lock / .python-version
+    ├── build           ← 安裝 uv + Python + uv sync + dbt
+    └── parse_config.py ← 解析 pyproject.toml entry points
+
+Build script 嘅關鍵步驟:
+  1. 安裝 uv (version managed + SHA256 checksum)
+  2. 安裝 Python (via uv)
+  3. uv sync --frozen (裝 dependencies)
+  4. 偵測 dbt project → 跑 dbt deps + parse
+  5. 自動偵測 entry point (pyproject.toml scripts)
+  6. 支援 Service Binding (private mirror netrc + CA cert)
 ```
 
 **為咩 Luban CI 要自己寫？** 因為 Paketo 嘅 Python buildpack 唔支援 `uv`：
 ```
 Paketo Python buildpack:  ✓ pip / poetry / pipenv  ✗ uv
 Luban CI python-uv:       ✓ uv (快 10-100 倍)
+```
+
+**你可以用 Composite Buildpack 組合 Luban CI + Paketo：**
+
+```toml
+# com.mycompany/python-suite (composite)
+[buildpack]
+id = "com.mycompany/python-suite"
+version = "1.0.0"
+
+# Group 1: uv-based (最快)
+[[order]]
+  [[order.group]]
+  id = "luban-ci/python-uv"
+  version = "1.0.0"
+  [[order.group]]
+  id = "paketo-buildpacks/syft"
+  optional = true
+
+# Group 2: pip-based (fallback)
+[[order]]
+  [[order.group]]
+  id = "paketo-buildpacks/python"
+  version = "5.0.0"
+  [[order.group]]
+  id = "paketo-buildpacks/pip"
+  version = "3.0.0"
 ```
 
 ---
