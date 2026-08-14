@@ -2,6 +2,7 @@
 
 > 整理日期: 2026-08-14
 > 來源: https://github.com/buildpacks-community/kpack
+> Luban CI: https://github.com/metasync/luban-ci
 > 作者: Paul Wong
 
 ---
@@ -26,9 +27,25 @@
 ## 1. 核心概念
 
 ```
-Buildpack = 標準 + 實現 (點樣將 source code 變成 OCI image)
-kpack     = 喺 K8s 上面跑 buildpacks 嘅平台
-pack CLI  = 喺本地跑 buildpacks 嘅工具
+Buildpack   = 標準 + 實現 (點樣將 source code 變成 OCI image)
+kpack       = 喺 K8s 上面跑 buildpacks 嘅平台 (CRD-based)
+pack CLI    = 喺本地跑 buildpacks 嘅工具
+Luban CI    = 喺 K8s 上面跑 buildpacks 嘅 CI 系統 (Argo Workflows-based)
+```
+
+### 平台全景
+
+```
+Buildpacks (CNB 標準)
+    │
+    ├── 本地開發 ──── pack CLI
+    │
+    ├── CI/CD ──── Luban CI / GitHub Actions / GitLab CI / Tekton
+    │
+    ├── 雲平台 ──── Heroku / Google App Engine / Cloud Foundry
+    │
+    └── K8s ──── kpack (CRD-based, 自動 rebuild)
+                 Luban CI (Argo Workflows-based, pipeline orchestration)
 ```
 
 ---
@@ -61,9 +78,9 @@ my-buildpack/
 Buildpack 嘅 `detect` script 會掃你嘅 source code：
 
 ```
-Java buildpack:  搵 pom.xml / build.gradle → pass
+Java buildpack:    搵 pom.xml / build.gradle → pass
 Node.js buildpack: 搵 package.json → pass
-Python buildpack: 搵 requirements.txt / pyproject.toml / uv.lock → pass
+Python buildpack:  搵 requirements.txt / pyproject.toml / uv.lock → pass
 ```
 
 ### 2.4 Build Phase
@@ -84,6 +101,28 @@ build layer   → 只存在喺 build 環境，build 完就丟
 cache layer   → 存喺 build cache，下次 build 可以 restore
 ```
 
+### 2.6 Luban CI 嘅 Buildpack 做法
+
+Luban CI 寫咗一個 `python-uv` buildpack，支援 `uv` (超快 Python package manager)：
+
+```
+Luban CI python-uv buildpack:
+  detect: 搵 pyproject.toml / uv.lock / .python-version
+  build:
+    1. 安裝 uv (version managed + checksum 校驗)
+    2. 安裝 Python (via uv)
+    3. uv sync --frozen (裝 dependencies)
+    4. 偵測 dbt project → 跑 dbt deps + parse
+    5. 自動偵測 entry point (pyproject.toml scripts)
+    6. 支援 Service Binding (private mirror netrc + CA cert)
+```
+
+**為咩 Luban CI 要自己寫？** 因為 Paketo 嘅 Python buildpack 唔支援 `uv`：
+```
+Paketo Python buildpack:  ✓ pip / poetry / pipenv  ✗ uv
+Luban CI python-uv:       ✓ uv (快 10-100 倍)
+```
+
 ---
 
 ## 3. Buildpackage 係咩
@@ -98,6 +137,19 @@ paketobuildpacks/java (buildpackage = docker image)
 ├── jvmcommon/          ← sub-buildpack
 ├── gradle/             ← sub-buildpack
 └── maven/              ← sub-buildpack
+```
+
+### Luban CI 嘅 Buildpackage
+
+```
+luban-ci/python-uv (buildpackage)
+├── buildpack.toml
+├── package.toml
+├── bin/
+│   ├── detect          ← 搵 pyproject.toml / uv.lock
+│   ├── build           ← 安裝 uv + Python + dependencies
+│   └── parse_config.py ← 解析 pyproject.toml entry points
+└── README.md
 ```
 
 ### 打包方式
@@ -142,6 +194,19 @@ kpack 係一個 **Kubernetes controller**，佢唔識 build app，只係幫手 o
 - Cosign 簽名 (自動簽名 image)
 ```
 
+### 4.3 kpack vs Luban CI
+
+```
+              kpack                    Luban CI
+─────────────────────────────────────────────────────
+架構          CRD-based controller     Argo Workflows-based
+触发方式      watch CRD 自動 rebuild   webhook / 手動 trigger
+Pipeline      冇 (只 build image)      有 (多 stage pipeline)
+適用場景      純 image build           完整 CI/CD pipeline
+Buildpack     引用 ClusterStore        自帶 custom buildpacks
+整合          獨立                      Argo CD + Argo Workflows
+```
+
 ---
 
 ## 5. 三者嘅關係
@@ -151,16 +216,26 @@ kpack ──引用──▶ ClusterStore ──包含──▶ Buildpackage ─�
 (controller)  (資料庫)          (docker image)        (scripts)
 ```
 
+### Luban CI 嘅做法
+
+```
+Luban CI ──引用──▶ 自帶 buildpacks ──打包成──▶ Buildpackage
+(Argo Workflow)   (python-uv)                (docker image)
+      │
+      └── Argo Workflow → create build Pod → run lifecycle → push image
+```
+
 ### 類比
 
 ```
-Buildpack  = 食譜 (點樣煮某道菜)
-Buildpackage = 一本書 (打包好嘅食譜)
-kpack      = 自動煮食機 (喺 K8s 上面幫你煮)
-pack CLI   = 你喺屋企廚房煮 (自己執行食譜)
-ClusterStore = 書架 (存放所有書)
-Builder    = 借書證 (定義你有權借邊啲書)
-Image      = 你嘅借書請求 (我要呢本書)
+Buildpack      = 食譜 (點樣煮某道菜)
+Buildpackage   = 一本書 (打包好嘅食譜)
+kpack          = 自動煮食機 (喺 K8s 上面幫你煮)
+pack CLI       = 你喺屋企廚房煮 (自己執行食譜)
+Luban CI       = 自動煮食流水線 (喺 K8s 上面幫你煮，仲有成條 production line)
+ClusterStore   = 書架 (存放所有書)
+Builder        = 借書證 (定義你有權借邊啲書)
+Image          = 你嘅借書請求 (我要呢本書)
 ```
 
 ---
@@ -179,6 +254,8 @@ spec:
   - image: paketobuildpacks/java
   - image: paketobuildpacks/nodejs
   - image: paketobuildpacks/go
+  # 可以加入 Luban CI 嘅 buildpackage:
+  # - image: your-registry/luban-ci/python-uv
 ```
 
 可以按語言 / team / project 拆分多個 Store。
@@ -196,6 +273,10 @@ spec:
     image: "paketobuildpacks/build-jammy-base"
   runImage:
     image: "paketobuildpacks/run-jammy-base"
+
+# Luban CI 有自己嘅 custom stack:
+#   stack/ 目錄入面定義 Ubuntu-based stack
+#   支援 uv 嘅 Python runtime
 ```
 
 ### 6.3 ClusterLifecycle — Lifecycle binary
@@ -233,6 +314,9 @@ spec:
     - id: paketo-buildpacks/nodejs
   - group:
     - id: paketo-buildpacks/go
+  # 如果用 Luban CI 嘅 python-uv buildpack:
+  # - group:
+  #   - id: luban-ci/python-uv
 ```
 
 ### 6.5 Image — 你嘅 App 定義
@@ -288,6 +372,11 @@ type: kubernetes.io/basic-auth
 stringData:
   username: xxx
   password: xxx
+
+# Luban CI 嘅 buildpack 支援 Service Binding:
+#   - netrc (private PyPI mirror credentials)
+#   - ca-certificates (self-signed mirror CA)
+#   自動偵測 SERVICE_BINDING_ROOT 入面嘅 binding
 ```
 
 ---
@@ -301,15 +390,34 @@ stringData:
 | **Paketo** | 最主流，支援 Java/Node/Go/Python/Ruby/.NET/PHP | 活躍，CNCF 生態 |
 | **Google Cloud** | GCP 專屬，整合 Cloud Build | 活躍 |
 | **Heroku** | Heroku 平台用 | 活躍 |
-| **Luban CI** | Python uv + dbt 整合 | 活躍 |
+| **Luban CI** | Python uv + dbt 整合，支援 private mirror | 活躍 |
 
 ### 幾時要自己寫 Buildpack？
 
 ```
 1. 你有 proprietary framework → 外面冇 buildpack
 2. 你有特殊 build 邏輯 → 要加額外 step
-3. 語言/工具太新 → 社群仲未有
-4. 你要整合內部工具鏈 → private mirror 等
+3. 語言/工具太新 → 社群仲未有 (例如 Luban CI 嘅 uv)
+4. 你要整合內部工具鏈 → private mirror 等 (Luban CI 嘅 Service Binding)
+```
+
+### Luban CI 嘅典型 Use Case
+
+```
+你嘅 Python app 用 uv 做 package manager:
+  → Paketo 冇支援
+  → Luban CI 有 python-uv buildpack
+  → 直接用就得
+
+你嘅公司有 private PyPI mirror:
+  → Paketo 唔知道點 access
+  → Luban CI 支援 Service Binding (netrc + CA cert)
+  → 自動偵測同使用
+
+你嘅 app 有 dbt project:
+  → Paketo 唔知 dbt 係咩
+  → Luban CI 自動偵測 + 跑 dbt deps + parse
+  → 生成 manifest.json
 ```
 
 ---
@@ -327,11 +435,21 @@ GitHub: https://github.com/paketo-buildpacks
 Java         paketobuildpacks/java
 Node.js      paketobuildpacks/nodejs
 Go           paketobuildpacks/go
-Python       paketobuildpacks/python
+Python       paketobuildpacks/python (pip/poetry/pipenv)
 Ruby         paketobuildpacks/ruby
 PHP          paketobuildpacks/php
 .NET Core    paketobuildpacks/dotnet-core
 Rust         paketobuildpacks/rust
+```
+
+### Luban CI Buildpacks
+
+```
+GitHub: https://github.com/metasync/luban-ci/tree/main/buildpacks
+
+語言         buildpackage                    特色
+─────────────────────────────────────────────────────
+Python (uv)  luban-ci/python-uv              uv + dbt + private mirror
 ```
 
 ### Google Cloud Buildpacks
@@ -350,16 +468,18 @@ Image: heroku/buildpacks:24
 
 ---
 
-## 9. kpack vs pack CLI
+## 9. kpack vs pack CLI vs Luban CI
 
 ```
-              pack CLI         kpack
-─────────────────────────────────────────
-需要 K8s      唔使              要
-需要 Docker   要                唔使 (k8s pod)
-自動 rebuild  唔使 (手動)       ✅ 自動
-適合場景      本地開發/CI/CD    生產環境
-學習成本      低                高
+              pack CLI         kpack              Luban CI
+──────────────────────────────────────────────────────────────
+需要 K8s      唔使              要                  要
+需要 Docker   要                唔使 (k8s pod)      唔使 (k8s pod)
+自動 rebuild  唔使 (手動)       ✅ 自動             webhook trigger
+Pipeline      冇                冇                  ✅ Argo Workflows
+Custom BP     要自己打包        放 ClusterStore      自帶
+適用場景      本地開發/CI/CD    生產環境 image build  完整 CI/CD pipeline
+學習成本      低                高                   中高
 ```
 
 ### pack CLI 快速試玩
@@ -375,6 +495,17 @@ pack build my-app \
 
 # Run
 docker run -p 8080:8080 my-app
+```
+
+### Luban CI 快速試玩
+
+```bash
+# Luban CI 用 Argo Workflows orchestrate build
+# 你嘅 workflow 入面會:
+#   1. pull source code
+#   2. create build Pod
+#   3. Pod 入面跑 luban-ci/python-uv buildpack
+#   4. push OCI image 到 registry
 ```
 
 ---
@@ -427,6 +558,27 @@ cat <<EOF > "$CNB_PLATFORM_DIR/launch.toml"
 EOF
 ```
 
+### 真實案例：Luban CI 嘅 python-uv buildpack
+
+```
+luban-ci/buildpacks/python-uv/
+├── buildpack.toml
+├── package.toml
+├── README.md
+└── bin/
+    ├── detect          ← 搵 pyproject.toml / uv.lock / .python-version
+    ├── build           ← 安裝 uv + Python + uv sync + dbt
+    └── parse_config.py ← 解析 pyproject.toml entry points
+
+Build script 嘅關鍵步驟:
+  1. 安裝 uv (version managed + SHA256 checksum)
+  2. 安裝 Python (via uv)
+  3. uv sync --frozen (裝 dependencies)
+  4. 偵測 dbt project → 跑 dbt deps + parse
+  5. 自動偵測 entry point (pyproject.toml scripts)
+  6. 生成 launch.toml (定義 process)
+```
+
 ---
 
 ## 11. Luban CI 整合
@@ -434,6 +586,16 @@ EOF
 ### Luban CI 係咩？
 
 GitOps-based CI system，跑喺 K8s 上面，用 Argo Workflows + Cloud Native Buildpacks。
+
+```
+GitHub: https://github.com/metasync/luban-ci
+
+組件:
+├── Argo Workflows (pipeline orchestration)
+├── Custom Buildpacks (python-uv)
+├── Custom Stack (Ubuntu-based)
+└── Manifests (K8s YAMLs)
+```
 
 ### 為咩要自己寫 Buildpack？
 
@@ -460,6 +622,42 @@ Luban CI python-uv buildpack:
 4. dbt project 自動偵測 + manifest 生成
 5. Standard / Direct execution mode
 6. Layer caching (uv, python, venv, cache)
+```
+
+### Luban CI 同 kpack 嘅分別
+
+```
+kpack:
+  - 純 image build
+  - CRD-based, 自動 rebuild
+  - 冇 pipeline concept
+  - 適合: 純 build 場景
+
+Luban CI:
+  - 完整 CI/CD pipeline
+  - Argo Workflows-based
+  - 多 stage (test → build → deploy)
+  - 自帶 custom buildpacks
+  - 適合: 完整 CI/CD 場景
+```
+
+### 整合方案
+
+```
+方案 A: 用 kpack 做 build
+  → kpack 負責 image build
+  → Argo CD 負責 deploy
+  → 適合: 純 build + deploy 分離
+
+方案 B: 用 Luban CI 做 build
+  → Luban CI 負責完整 pipeline
+  → Argo CD 負責 deploy
+  → 適合: 需要 test stage 嘅場景
+
+方案 C: 兩者並存
+  → 簡單 app 用 kpack (自動 rebuild)
+  → 複雜 app 用 Luban CI (多 stage pipeline)
+  → 按需選擇
 ```
 
 ---
@@ -514,6 +712,39 @@ kubectl get images
 kubectl get builds
 ```
 
+### 加入 Luban CI Buildpack
+
+```bash
+# 1. 將 Luban CI 嘅 buildpackage push 到你嘅 registry
+cd luban-ci/buildpacks/python-uv
+pack buildpack package your-registry/luban-ci/python-uv \
+  --path . \
+  --format image \
+  --publish
+
+# 2. 喺 ClusterStore 入面加呢個 buildpackage
+# (更新 store.yaml)
+spec:
+  sources:
+  - image: paketobuildpacks/java
+  - image: paketobuildpacks/nodejs
+  - image: your-registry/luban-ci/python-uv   # ← 加呢行
+
+# 3. 喺 Builder order 入面加呢個 buildpack
+# (更新 builder.yaml)
+order:
+- group:
+  - id: paketo-buildpacks/java
+- group:
+  - id: paketo-buildpacks/nodejs
+- group:
+  - id: luban-ci/python-uv          # ← 加呢行
+
+# 4. Apply
+kubectl apply -f store.yaml
+kubectl apply -f builder.yaml
+```
+
 ---
 
 ## 參考連結
@@ -524,4 +755,5 @@ kubectl get builds
 - Google Buildpacks: https://github.com/GoogleCloudPlatform/buildpacks
 - Heroku Buildpacks: https://hub.docker.com/r/heroku/buildpacks
 - Luban CI: https://github.com/metasync/luban-ci
+- Luban CI Buildpacks: https://github.com/metasync/luban-ci/tree/main/buildpacks
 - pack CLI: https://github.com/buildpacks/pack
