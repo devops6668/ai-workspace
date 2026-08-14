@@ -10,17 +10,18 @@
 ## 目錄
 
 1. [核心概念](#1-核心概念)
-2. [Buildpack 係咩](#2-buildpack-係咩)
-3. [Buildpackage 係咩](#3-buildpackage-係咩)
-4. [kpack 係咩](#4-kpack-係咩)
-5. [三者嘅關係](#5-三者嘅關係)
-6. [kpack CRD 資源](#6-kpack-crd-資源)
-7. [Buildpack 生態](#7-buildpack-生態)
-8. [邊度搵現成 Buildpacks](#8-邊度搵現成-buildpacks)
-9. [kpack vs pack CLI](#9-kpack-vs-pack-cli)
-10. [自己寫 Buildpack](#10-自己寫-buildpack)
-11. [Luban CI 整合](#11-luban-ci-整合)
-12. [快速入門](#12-快速入門)
+2. [kpack 設置指南](#2-kpack-設置指南)
+3. [Buildpack 係咩](#3-buildpack-係咩)
+4. [Buildpackage 係咩](#4-buildpackage-係咩)
+5. [kpack 係咩](#5-kpack-係咩)
+6. [三者嘅關係](#6-三者嘅關係)
+7. [kpack CRD 資源](#7-kpack-crd-資源)
+8. [Buildpack 生態](#8-buildpack-生態)
+9. [邊度搵現成 Buildpacks](#9-邊度搵現成-buildpacks)
+10. [kpack vs pack CLI](#10-kpack-vs-pack-cli)
+11. [自己寫 Buildpack](#11-自己寫-buildpack)
+12. [Luban CI 整合](#12-luban-ci-整合)
+13. [快速入門](#13-快速入門)
 
 ---
 
@@ -50,13 +51,242 @@ Buildpacks (CNB 標準)
 
 ---
 
-## 2. Buildpack 係咩
+## 2. kpack 設置指南
+
+安裝完 kpack 之後，要按順序設置以下 CRD 先至可以 build 到 image。
+
+### 13.1 必須設置嘅 7 樣嘢
+
+```
+順序:
+1. Secret           ← 憑證 (registry + git)
+2. ServiceAccount   ← 掛 secret
+3. ClusterStore     ← buildpackage 倉庫
+4. ClusterStack     ← OS base image
+5. ClusterLifecycle ← lifecycle binary
+6. Builder          ← 整合以上全部
+7. Image            ← 你嘅 app (終於可以 build)
+```
+
+### 13.2 Secret — Registry + Git 憑證
+
+```yaml
+# Registry push credentials (你嘅 Harbor)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-credentials
+  annotations:
+    kpack.io/docker: harbor.paulhome.local    # ← registry 地址
+type: kubernetes.io/basic-auth
+stringData:
+  username: admin
+  password: Harbor12345
+
+---
+# Git source credentials (私有 repo 先需要)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-credentials
+  annotations:
+    kpack.io/git: https://github.com
+type: kubernetes.io/basic-auth
+stringData:
+  username: xxx
+  password: xxx
+```
+
+### 13.3 ServiceAccount — 掛 Secret
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kpack-sa
+  namespace: default
+secrets:
+- name: harbor-credentials
+imagePullSecrets:
+- name: harbor-credentials
+```
+
+### 13.4 ClusterStore — Buildpackage 倉庫
+
+```yaml
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStore
+metadata:
+  name: paketo
+spec:
+  sources:
+  - image: paketobuildpacks/java
+  - image: paketobuildpacks/nodejs
+  - image: paketobuildpacks/go
+  # 如果用 Luban CI:
+  # - image: your-registry/luban-ci/python-uv
+```
+
+### 13.5 ClusterStack — OS Base Image
+
+```yaml
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStack
+metadata:
+  name: base
+spec:
+  id: "io.buildpacks.stacks.jammy"
+  buildImage:
+    image: "paketobuildpacks/build-jammy-base"
+  runImage:
+    image: "paketobuildpacks/run-jammy-base"
+```
+
+### 13.6 ClusterLifecycle — Lifecycle Binary
+
+```yaml
+apiVersion: kpack.io/v1alpha2
+kind: ClusterLifecycle
+metadata:
+  name: default-lifecycle
+spec:
+  image: buildpacksio/lifecycle
+```
+
+### 13.7 Builder — 整合配置
+
+```yaml
+apiVersion: kpack.io/v1alpha2
+kind: Builder
+metadata:
+  name: my-builder
+  namespace: default
+spec:
+  serviceAccountName: kpack-sa
+  tag: harbor.paulhome.local/kpack/builder    # builder image 嘅位置
+  stack:
+    name: base
+    kind: ClusterStack
+  store:
+    name: paketo
+    kind: ClusterStore
+  order:
+  - group:
+    - id: paketo-buildpacks/java
+  - group:
+    - id: paketo-buildpacks/nodejs
+  - group:
+    - id: paketo-buildpacks/go
+```
+
+### 13.8 Image — 你嘅 App
+
+```yaml
+apiVersion: kpack.io/v1alpha2
+kind: Image
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  tag: harbor.paulhome.local/apps/my-app     # 出 image 嘅位置
+  serviceAccountName: kpack-sa
+  builder:
+    name: my-builder
+    kind: Builder
+  source:
+    git:
+      url: https://github.com/myorg/myapp.git
+      revision: main
+  cache:
+    volume:
+      size: "2Gi"
+```
+
+### 13.9 一覽表
+
+```
+資源               必須?   作用
+─────────────────────────────────────────────
+Secret             ✓      registry + git credentials
+ServiceAccount     ✓      掛 secret
+ClusterStore       ✓      buildpackage 倉庫
+ClusterStack       ✓      OS base image
+ClusterLifecycle   ✓      lifecycle binary
+Builder            ✓      整合 stack + store + order
+Image              ✓      你嘅 app
+```
+
+### 13.10 完整流程圖
+
+```
+1. kpack 安裝
+   kubectl apply -f release.yaml
+   ↓
+2. Secret (registry + git)
+   kubectl apply -f secret.yaml
+   ↓
+3. ServiceAccount
+   kubectl apply -f sa.yaml
+   ↓
+4. ClusterStore (buildpackages)
+   kubectl apply -f store.yaml
+   ↓
+5. ClusterStack (OS base)
+   kubectl apply -f stack.yaml
+   ↓
+6. ClusterLifecycle
+   kubectl apply -f lifecycle.yaml
+   ↓
+7. Builder
+   kubectl apply -f builder.yaml
+   ↓
+8. Image ← 終於可以 build!
+   kubectl apply -f image.yaml
+   ↓
+9. kpack 自動 create Build + Pod
+   ↓
+10. OCI Image 出咗去 registry
+```
+
+### 13.11 你嘅環境 (k3s + Harbor) 嘅具體設定
+
+```yaml
+# Secret — 用你嘅 Harbor
+kpack.io/docker: harbor.paulhome.local
+
+# Builder tag — 寫入 Harbor
+tag: harbor.paulhome.local/kpack/builder
+
+# Image tag — 寫入 Harbor
+tag: harbor.paulhome.local/apps/my-app
+
+# Store — 用 Paketo
+- image: paketobuildpacks/java
+- image: paketobuildpacks/nodejs
+```
+
+### 13.12 常見問題
+
+```
+Q: ClusterStore 唔 reconcile?
+A: 檢查 ServiceAccount 有冇 registry 權限
+
+Q: Builder 一直 pending?
+A: 檢查 ClusterStore + ClusterStack 係咪 Ready
+
+Q: Image build fail?
+A: kp build logs <image-name> -n <namespace> 睇 log
+```
+
+---
+
+## 3. Buildpack 係咩
 
 Buildpack 係一組 **executable scripts + metadata**，打包成一個 docker image (叫 buildpackage)。
 
 佢嘅工作：**自動 detect 你嘅 app 語言，然後 build 成 OCI image**。
 
-### 2.1 兩種 Buildpack
+### 13.1 兩種 Buildpack
 
 | 類型 | 包含 | 作用 | 類比 |
 |------|------|------|------|
@@ -87,7 +317,7 @@ paketo-buildpacks/java/          ← composite buildpack
 
 **Composite 唔係 "集合"，係 "配方"** — 只係列出 "用邊啲 component buildpacks、咩順序"，入面冇任何 code。
 
-### 2.2 Composite vs Component 嘅分別
+### 13.2 Composite vs Component 嘅分別
 
 ```
                     Component Buildpack    Composite Buildpack
@@ -101,7 +331,7 @@ paketo-buildpacks/java/          ← composite buildpack
 檔案大小            幾 MB (有 code)        幾 KB (只有 toml)
 ```
 
-### 2.3 Composite 嘅真實例子
+### 13.3 Composite 嘅真實例子
 
 #### Paketo Java (composite) — 22 個 component buildpacks
 
@@ -230,7 +460,7 @@ name = "Paketo Buildpack for Node.js"
                       └─ No → fail ❌
 ```
 
-### 2.4 Buildpack ID — 自己定義嘅名
+### 13.4 Buildpack ID — 自己定義嘅名
 
 Buildpack ID 係你自己定義嘅，冇人幫你註冊，冇 registry。
 
@@ -254,7 +484,7 @@ ID + version + image location = 唯一
   Image:   gcr.io/paketo-buildpacks/java@sha256:abc123
 ```
 
-### 2.5 TOML — Buildpack 嘅設定檔格式
+### 13.5 TOML — Buildpack 嘅設定檔格式
 
 Buildpack 用 TOML (Tom's Obvious, Minimal Language) 做設定檔。
 
@@ -299,7 +529,7 @@ Cargo.toml         ← Rust 嘅 package manager
 pyproject.toml     ← Python 嘅 project config
 ```
 
-### 2.6 Detection Phase
+### 13.6 Detection Phase
 
 Buildpack 嘅 `detect` script 會掃你嘅 source code：
 
@@ -312,7 +542,7 @@ Ruby buildpack:    搵 Gemfile → pass
 PHP buildpack:     搵 composer.json → pass
 ```
 
-### 2.7 Build Phase
+### 13.7 Build Phase
 
 `build` script 會：
 1. 安裝 runtime (JDK, Node.js, etc.)
@@ -322,7 +552,7 @@ PHP buildpack:     搵 composer.json → pass
 5. 定義 process type (web, worker, etc.)
 6. 產出 OCI image layers
 
-### 2.8 Layer 機制
+### 13.8 Layer 機制
 
 ```
 launch layer  → 喺最終 OCI image 入面 (runtime + dependencies)
@@ -330,7 +560,7 @@ build layer   → 只存在喺 build 環境，build 完就丟 (編譯工具)
 cache layer   → 存喺 build cache，下次 build 可以 restore (npm cache)
 ```
 
-### 2.9 Luban CI 嘅 Buildpack 做法
+### 13.9 Luban CI 嘅 Buildpack 做法
 
 Luban CI 寫咗一個 `python-uv` buildpack (component)，支援 `uv` (超快 Python package manager)：
 
@@ -524,7 +754,7 @@ version = "1.0.0"
 
 ---
 
-## 3. Buildpackage 係咩
+## 4. Buildpackage 係咩
 
 Buildpackage 係一個 **docker image**，入面打包咗一個或一組 buildpack。
 
@@ -567,11 +797,11 @@ COPY --chown=1000:1000 bin/ /buildpacks/my-buildpack/bin/
 
 ---
 
-## 4. kpack 係咩
+## 5. kpack 係咩
 
 kpack 係一個 **Kubernetes controller**，佢唔識 build app，只係幫手 orchestrate 成個 build 流程。
 
-### 4.1 kpack 做咩？
+### 13.1 kpack 做咩？
 
 ```
 1. watch Image CRD
@@ -582,7 +812,7 @@ kpack 係一個 **Kubernetes controller**，佢唔識 build app，只係幫手 o
 6. 最終 push OCI image 到 registry
 ```
 
-### 4.2 額外功能
+### 13.2 額外功能
 
 ```
 - 自動 rebuild (source/buildpack/stack 變)
@@ -593,7 +823,7 @@ kpack 係一個 **Kubernetes controller**，佢唔識 build app，只係幫手 o
 - Cosign 簽名 (自動簽名 image)
 ```
 
-### 4.3 kpack vs Luban CI
+### 13.3 kpack vs Luban CI
 
 ```
               kpack                    Luban CI
@@ -608,7 +838,7 @@ Buildpack     引用 ClusterStore        自帶 custom buildpacks
 
 ---
 
-## 5. 三者嘅關係
+## 6. 三者嘅關係
 
 ```
 kpack ──引用──▶ ClusterStore ──包含──▶ Buildpackage ──包含──▶ Buildpack
@@ -639,9 +869,9 @@ Image          = 你嘅借書請求 (我要呢本書)
 
 ---
 
-## 6. kpack CRD 資源
+## 7. kpack CRD 資源
 
-### 6.1 ClusterStore — Buildpackage 嘅倉庫
+### 13.1 ClusterStore — Buildpackage 嘅倉庫
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -659,7 +889,7 @@ spec:
 
 可以按語言 / team / project 拆分多個 Store。
 
-### 6.2 ClusterStack — Build 嘅基礎 OS
+### 13.2 ClusterStack — Build 嘅基礎 OS
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -678,7 +908,7 @@ spec:
 #   支援 uv 嘅 Python runtime
 ```
 
-### 6.3 ClusterLifecycle — Lifecycle binary
+### 13.3 ClusterLifecycle — Lifecycle binary
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -689,7 +919,7 @@ spec:
   image: buildpacksio/lifecycle
 ```
 
-### 6.4 Builder / ClusterBuilder — 整合配置
+### 13.4 Builder / ClusterBuilder — 整合配置
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -718,7 +948,7 @@ spec:
   #   - id: luban-ci/python-uv
 ```
 
-### 6.5 Image — 你嘅 App 定義
+### 13.5 Image — 你嘅 App 定義
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -745,7 +975,7 @@ spec:
       value: "21"
 ```
 
-### 6.6 Secrets
+### 13.6 Secrets
 
 ```yaml
 # Registry secret
@@ -780,7 +1010,7 @@ stringData:
 
 ---
 
-## 7. Buildpack 生態
+## 8. Buildpack 生態
 
 ### 主要維護者
 
@@ -821,7 +1051,7 @@ stringData:
 
 ---
 
-## 8. 邊度搵現成 Buildpacks
+## 9. 邊度搵現成 Buildpacks
 
 ### Paketo Buildpacks (推薦)
 
@@ -867,7 +1097,7 @@ Image: heroku/buildpacks:24
 
 ---
 
-## 9. kpack vs pack CLI vs Luban CI
+## 10. kpack vs pack CLI vs Luban CI
 
 ```
               pack CLI         kpack              Luban CI
@@ -909,7 +1139,7 @@ docker run -p 8080:8080 my-app
 
 ---
 
-## 10. 自己寫 Buildpack
+## 11. 自己寫 Buildpack
 
 ### 最簡單嘅結構
 
@@ -980,7 +1210,7 @@ Build script 嘅關鍵步驟:
 
 ---
 
-## 11. Luban CI 整合
+## 12. Luban CI 整合
 
 ### Luban CI 係咩？
 
@@ -1061,7 +1291,7 @@ Luban CI:
 
 ---
 
-## 12. 快速入門
+## 13. 快速入門
 
 ### 安裝 kpack
 
