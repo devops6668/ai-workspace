@@ -144,13 +144,81 @@ spec:
 
 ### 2.6 ClusterLifecycle — Lifecycle Binary
 
+ClusterLifecycle 係指定 **lifecycle binary 用邊個 image** 嘅 kpack CRD。
+
+#### Lifecycle 係咩？
+
+Lifecycle 係一個 binary，負責 **orchestrate 成個 build 流程**：
+
+```
+Lifecycle 做嘅嘢:
+1. Analyze  — 分析舊 image (如果有)
+2. Detect  — 搵邊個 buildpack 適合
+3. Restore — restore cache
+4. Build   — 跑 buildpack 嘅 build script
+5. Export  — push OCI image 到 registry
+```
+
+佢唔做任何 build，只係 **指揮 buildpacks 做嘢**。
+
+#### 類比
+
+```
+Buildpack = 工人 (識砌牆)
+Lifecycle = 工頭 (指揮工人做嘢)
+ClusterLifecycle = 告訴 kpack "用邊個工頭"
+```
+
+#### Lifecycle Image 入面有咩？
+
+```
+buildpacksio/lifecycle (docker image)
+├── analyzer        ← analyze phase
+├── detector        ← detect phase
+├── restorer        ← restore cache
+├── builder         ← build phase
+├── exporter        ← export phase
+├── rebase          ← rebase phase
+└── launcher        ← 最終 image 嘅 ENTRYPOINT
+```
+
+全部都係 Go binary，打包喺一個 image 入面。
+
+#### CRD 設定
+
 ```yaml
 apiVersion: kpack.io/v1alpha2
 kind: ClusterLifecycle
 metadata:
   name: default-lifecycle
 spec:
-  image: buildpacksio/lifecycle
+  image: buildpacksio/lifecycle    # ← 指定用邊個 lifecycle image
+```
+
+#### 點解需要 ClusterLifecycle？
+
+```
+kpack 唔係直接跑 buildpacks
+kpack 係:
+  1. create build Pod
+  2. Pod 入面跑 lifecycle binary
+  3. lifecycle 再調用 buildpacks
+
+所以 kpack 要知道:
+  → 用邊個 lifecycle image
+  → ClusterLifecycle 就係指定呢樣嘢
+```
+
+#### 通常唔使改
+
+```
+預設: buildpacksio/lifecycle
+幾乎所有情況都夠用
+
+幾時要改:
+  → 你用 custom lifecycle (例如加咗特殊功能)
+  → 你要用特定版本嘅 lifecycle
+  → 你要用唔同 arch 嘅 lifecycle (arm64)
 ```
 
 ### 2.7 Builder — 整合配置
