@@ -13,6 +13,7 @@
 - [Phase 5: Grafana Dashboards](#phase-5-grafana-dashboards)
   - [Dashboard 1: Security Posture](#dashboard-1-security-posture-cvss-vs-epss-全覽)
   - [Dashboard 2: Auto-Patch Pipeline](#dashboard-2-auto-patch-pipeline)
+- [kpack Rebase 深度解析](#kpack-rebase-深度解析)
 - [Phase 6: WorkflowTemplate — Stack Rebuild (Auto)](#phase-6-workflowtemplate--stack-rebuild-auto)
 - [CronWorkflow](#cronworkflow)
 - [完整 Flow](#完整-flow)
@@ -872,6 +873,121 @@ data:
       "time": { "from": "now-7d", "to": "now" },
       "refresh": "1h"
     }
+```
+
+---
+
+## kpack Rebase 深度解析
+
+### Rebase 嘅原理
+
+```
+kpack rebase = 只換底層 (base OS)，保留上面所有 layers
+
+舊 Image:
+┌─────────────────────────────────┐
+│ Layer 5: App code               │ ← 保留
+│ Layer 4: Dependencies           │ ← 保留
+│ Layer 3: Buildpack layers       │ ← 保留
+│ Layer 2: Run image (Ubuntu 22.04│ ← 換走
+│ Layer 1: Base OS                │ ← 換走
+└─────────────────────────────────┘
+
+新版 Run Image:
+┌─────────────────────────────────┐
+│ Layer 2: Run image (Ubuntu 22.04│ ← 新版 (有 security fix)
+│ Layer 1: Base OS                │ ← 新版 (有 security fix)
+└─────────────────────────────────┘
+
+Rebase 結果:
+┌─────────────────────────────────┐
+│ Layer 5: App code               │ ← 保留
+│ Layer 4: Dependencies           │ ← 保留
+│ Layer 3: Buildpack layers       │ ← 保留
+│ Layer 2: Run image (Ubuntu 22.04│ ← 新版
+│ Layer 1: Base OS                │ ← 新版
+└─────────────────────────────────┘
+```
+
+### Rebase vs Rebuild
+
+```
+Rebase (快):
+  ┌─────────────────────────────────────────────────────┐
+  │ 1. 比較新舊 run image digest                         │
+  │ 2. 如果只係 base layer 變咗 → 直接換底層              │
+  │ 3. 上面嘅 application layer 完全保留                  │
+  │ 4. 新 image = 舊 app code + 新 base                  │
+  │                                                     │
+  │ 時間：幾秒                                            │
+  │ 唔需要 re-build application code                     │
+  └─────────────────────────────────────────────────────┘
+
+Rebuild (慢):
+  ┌─────────────────────────────────────────────────────┐
+  │ 1. 重新跑 buildpack detect + build                   │
+  │ 2. 重新安裝 dependencies                              │
+  │ 3. 重新 compile code                                 │
+  │ 4. 產出全新 image                                     │
+  │                                                     │
+  │ 時間：幾分鐘到幾十分鐘                                  │
+  │ 需要 re-build application code                       │
+  └─────────────────────────────────────────────────────┘
+```
+
+### Rebase 點觸發？
+
+```
+kpack 自動觸發 rebase 嘅情況：
+
+1. ClusterStack update
+   └── 你 update ClusterStack 嘅 run image
+   └── kpack 檢測到 run image 變咗
+   └── 自動 rebase 所有 affected images
+
+2. 手動觸發
+   └── kubectl annotate image <name> kpack.io/force-rebase=true
+   └── kpack 會嘗試 rebase
+
+3. Image reconciliation
+   └── kpack 定期 reconcile images
+   └── 如果 run image 有新版，自動 rebase
+```
+
+### Rebase 嘅限制
+
+```
+Rebase 唔係萬能：
+
+Rebase 可以做：
+  ✅ 換 base OS layer (ubuntu, alpine, amazonlinux)
+  ✅ 更新系統 packages (openssl, curl, etc.)
+  ✅ 保留 app code + dependencies
+
+Rebase 唔可以做：
+  ❌ 更新 application dependencies (pip, npm)
+  ❌ 更新 buildpack version
+  ❌ 更改 build process
+
+如果 run image 變化太大 (e.g., Ubuntu 22.04 → 24.04)
+  → rebase 失敗
+  → 需要 full rebuild
+```
+
+### EPSS Pipeline 點用 Rebase？
+
+```
+EPSS >= 0.7 (base OS CVE)
+    ↓
+Step 1: Update ClusterStack (新版 run image)
+    ↓
+Step 2: kpack auto-rebase 所有 images
+    ↓
+Step 3: Rollout restart pods (imagePullPolicy: Always)
+    ↓
+Step 4: pods 自動 pull 新版 base
+
+時間：幾分鐘 (vs full rebuild 幾十分鐘)
 ```
 
 ---
