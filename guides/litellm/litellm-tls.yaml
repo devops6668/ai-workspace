@@ -1,0 +1,15 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: litellm-tls-cert
+  namespace: litellm
+spec:
+  secretName: litellm-tls-cert
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+  commonName: litellm.luban.paulhome.local
+  dnsNames:
+    - litellm.luban.paulhome.local
+  duration: 2160h  # 90 days
+  renewBefore: 720h  # 30 days

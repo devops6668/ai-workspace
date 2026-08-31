@@ -1,0 +1,40 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: k8s-ctl-pipeline
+  namespace: devops
+  labels:
+    app.kubernetes.io/part-of: k8s-ctl-deploy
+spec:
+  description: >
+    Namespace lifecycle pipeline — calls EventListener to run k8s-ctl operations
+    with pipeline-runner ServiceAccount.
+  params:
+    - name: action
+      type: string
+      description: "Command: start | stop | status | stop-deploy | start-deploy | restart | clean"
+    - name: target
+      type: string
+      description: "Namespace name or prefix (e.g., snd-dwh, snd, all)"
+    - name: deploy-name
+      type: string
+      default: ""
+      description: "Deployment name (required for stop-deploy / start-deploy only)"
+    - name: replicas
+      type: string
+      default: "1"
+      description: "Replica count for start-deploy (default: 1)"
+  tasks:
+    - name: run-k8s-ctl
+      taskRef:
+        name: k8s-ctl-eventlistener
+        kind: Task
+      params:
+        - name: action
+          value: $(params.action)
+        - name: target
+          value: $(params.target)
+        - name: deploy-name
+          value: $(params.deploy-name)
+        - name: replicas
+          value: $(params.replicas)

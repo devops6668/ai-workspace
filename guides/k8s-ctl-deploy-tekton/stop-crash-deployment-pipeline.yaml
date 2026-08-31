@@ -1,0 +1,25 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: stop-crash-deployment-pipeline
+  namespace: devops
+spec:
+  description: |
+    Stop crash deployments — calls EventListener to create PipelineRun with pipeline-runner SA.
+  params:
+    - name: namespace
+      type: string
+      description: "Target namespace (e.g. snd-demo3)"
+    - name: restart-count
+      type: string
+      description: "Restart count threshold (e.g. 3)"
+  tasks:
+    - name: run-stop-crash
+      taskRef:
+        kind: Task
+        name: stop-crash-eventlistener
+      params:
+        - name: namespace
+          value: $(params.namespace)
+        - name: restart-count
+          value: $(params.restart-count)

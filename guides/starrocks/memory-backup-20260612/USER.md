@@ -1,0 +1,7 @@
+Paul Wong. Prefers Traditional Chinese / English. fcitx5 + Cangjie. Ubuntu. Homelab: k3s-luban (192.168.48.111), k3s disabled at boot, Cilium, ECK/Elastic APM, Rancher, ArgoCD, Harbor, Keycloak, OpenLDAP, Luban CI. Prefers NodePort+direct IP, external gateway (apm.luban.paulhome.local)+Luban CA cert. Values verified results — always test traces after setup. Prefers practical workarounds. Follows referenced docs strictly. Hermes: --port 9119 --host 0.0.0.0 --insecure --no-open --tui.
+§
+Paul Wong values verified results — always test with sample traces after APM/OTel setup. Prefers practical workarounds over ideal solutions when blocked by upstream bugs (e.g., Fleet Server namespace bug → used standalone APM + CoreDNS hosts workaround).
+§
+Expects me to follow referenced documentation strictly — will correct me if I add extra changes beyond what the docs specify. Example: adding OTel SDK to code location pyproject.toml when the observability guide only required env var propagation.
+§
+Paul interested in trading backtesting. Active monitors: 1928.HK 金沙中國 (target>=20), 0027.HK 银河娱乐 (target>=300). Cron: */15 9-16 * * 1-5 HKT. Interested in MA/RSI/Bollinger Band strategies, Yahoo Finance backtesting.

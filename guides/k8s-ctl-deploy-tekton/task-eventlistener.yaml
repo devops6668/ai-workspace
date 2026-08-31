@@ -1,0 +1,113 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: k8s-ctl-eventlistener
+  namespace: devops
+  labels:
+    app.kubernetes.io/part-of: k8s-ctl-deploy
+spec:
+  description: >
+    Wrapper task — calls EventListener to create a PipelineRun with pipeline-runner SA.
+    Use this task from Tekton Dashboard instead of k8s-ctl-pipeline directly.
+  params:
+    - name: action
+      type: string
+      description: "Command: start | stop | status | stop-deploy | start-deploy | restart | clean"
+    - name: target
+      type: string
+      description: "Namespace name or prefix (e.g., snd-dwh, snd, all)"
+    - name: deploy-name
+      type: string
+      default: ""
+      description: "Deployment name (required for stop-deploy / start-deploy only)"
+    - name: replicas
+      type: string
+      default: "1"
+      description: "Replica count for start-deploy (default: 1)"
+  steps:
+    - name: call-eventlistener
+      image: curlimages/curl:latest
+      script: |
+        #!/bin/sh
+
+        EVENTLISTENER="http://el-k8s-ctl-eventlistener.devops.svc.cluster.local:8080"
+
+        echo "=== k8s-ctl-eventlistener ==="
+        echo "action:      $(params.action)"
+        echo "target:      $(params.target)"
+        echo "deploy-name: $(params.deploy-name)"
+        echo "replicas:    $(params.replicas)"
+        echo "================================"
+
+        BODY=$(cat <<EOFB
+        {
+          "action": "$(params.action)",
+          "target": "$(params.target)",
+          "deploy-name": "$(params.deploy-name)",
+          "replicas": "$(params.replicas)"
+        }
+        EOFB
+        )
+
+        echo "Calling EventListener at ${EVENTLISTENER} ..."
+        RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X POST \
+          -H "Content-Type: application/json" \
+          -H "X-K8sCtl-Event: run" \
+          -d "${BODY}" \
+          "${EVENTLISTENER}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY_RESP=$(echo "$RESPONSE" | head -n -1)
+
+        echo "HTTP ${HTTP_CODE}"
+        echo "Response: ${BODY_RESP}"
+
+        if [ "${HTTP_CODE}" = "202" ]; then
+          EVENT_ID=$(echo "${BODY_RESP}" | grep -o '"eventID":"[^"]*"' | cut -d'"' -f4)
+          echo ""
+          echo "TaskRun created! EventID: ${EVENT_ID}"
+          echo "Checking TaskRun status..."
+
+          # Wait for TaskRun to appear
+          sleep 3
+
+          # Find the TaskRun by event ID label
+          TR_NAME=$(kubectl get taskrun -n devops \
+            -l triggers.tekton.dev/triggers-eventid="${EVENT_ID}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+          if [ -n "${TR_NAME}" ]; then
+            echo "TaskRun: ${TR_NAME}"
+            echo "Waiting for completion..."
+
+            # Wait for TaskRun to complete
+            kubectl wait taskrun "${TR_NAME}" -n devops \
+              --for=condition=Succeeded --timeout=600s 2>/dev/null || true
+
+            STATUS=$(kubectl get taskrun "${TR_NAME}" -n devops \
+              -o jsonpath='{.status.conditions[0].status}')
+            REASON=$(kubectl get taskrun "${TR_NAME}" -n devops \
+              -o jsonpath='{.status.conditions[0].reason}')
+
+            echo ""
+            echo "=== TaskRun ${TR_NAME}: ${REASON} (${STATUS}) ==="
+
+            # Show logs
+            STEP_POD=$(kubectl get pods -n devops \
+              -l tekton.dev/taskRun="${TR_NAME}" \
+              --sort-by=.metadata.creationTimestamp \
+              -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null)
+
+            if [ -n "${STEP_POD}" ]; then
+              echo ""
+              kubectl logs "${STEP_POD}" -n devops -c step-k8s-ctl 2>/dev/null
+            fi
+          else
+            echo "WARNING: Could not find TaskRun for event ${EVENT_ID}"
+            echo "Check manually: kubectl get taskrun -n devops"
+          fi
+        else
+          echo "ERROR: EventListener returned HTTP ${HTTP_CODE}"
+          exit 1
+        fi

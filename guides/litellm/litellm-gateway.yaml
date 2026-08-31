@@ -1,0 +1,28 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: litellm-gateway
+  namespace: litellm
+  annotations:
+    # If using Cilium Gateway (k3s with Cilium), ensure GatewayClass 'cilium' exists
+    # kubectl get gatewayclasses to verify
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: litellm-tls-cert
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same

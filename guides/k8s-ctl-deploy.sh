@@ -1,0 +1,583 @@
+#!/usr/bin/env bash
+#
+# k8s-ctl.sh — Generic namespace lifecycle controller
+#
+# Auto-discovers all scalable resources (Deployments, DaemonSets, StatefulSets).
+# Handles ArgoCD integration based on namespace prefix.
+#
+# Namespace convention:
+#   snd-*   Sandbox   → Stop: ArgoCD autosync enabled=false + scale to 0
+#                       → Start: ArgoCD autosync enabled=true (ArgoCD restores state from git)
+#   prd-*   Production → Stop: save replicas + scale to 0
+#                       → Start: restore saved replicas
+#   (other)            → Same as production (save + scale)
+#
+# ArgoCD Applications are found by spec.destination.namespace (they usually live
+# in the "argocd" namespace, not the target namespace). Only the snd-* prefix
+# touches sync policy; prd-* apps are never modified.
+#
+# Usage: k8s-ctl.sh <command> [namespace|prefix]
+#
+# Commands:
+#   start  [ns]   Restore
+#   stop   [ns]   Stop all scalable resources
+#   status [ns]   Overview
+#
+# State: /tmp/<ns>-state.json
+
+set -euo pipefail
+
+# --- Config ---
+SANDBOX_PREFIX="snd-"
+PROD_PREFIX="prd-"
+SCALABLE_RESOURCES=(deployments statefulsets daemonsets)
+ARGOCD_NS="${ARGOCD_NS:-argocd}"
+
+# --- Colors ---
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+log()    { echo -e "${GREEN}[ctl]${NC} $*" >&2; }
+warn()   { echo -e "${YELLOW}[ctl]${NC} $*"; }
+err()    { echo -e "${RED}[ctl]${NC} $*" >&2; }
+header() { echo -e "\n${CYAN}${BOLD}── $* ──${NC}"; }
+
+state_file() { echo "${K8S_CTL_STATE_DIR:-/tmp}/${1}-state.json"; }
+
+# --- Namespace discovery ---
+
+discover_ns() {
+  kubectl get ns -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+    | tr ' ' '\n' \
+    | grep -E "^(${SANDBOX_PREFIX}|${PROD_PREFIX})" \
+    | sort
+}
+
+ns_type() {
+  [[ "$1" == ${SANDBOX_PREFIX}* ]] && echo "sandbox" && return
+  [[ "$1" == ${PROD_PREFIX}* ]] && echo "production" && return
+  echo "other"
+}
+
+ns_label() {
+  local t; t=$(ns_type "$1")
+  case "$t" in
+    sandbox)    echo "$1 [sandbox]" ;;
+    production) echo "$1 [production]" ;;
+    *)          echo "$1" ;;
+  esac
+}
+
+resolve_ns() {
+  local input="${1:-all}"
+  [[ "$input" == "all" ]] && { discover_ns; return; }
+
+  local found=()
+  for ns in $(discover_ns); do
+    [[ "$ns" == "$input" || "$ns" == "${input}"-* || "$ns" == "${input}"_* ]] && found+=("$ns")
+  done
+  [[ ${#found[@]} -eq 0 ]] && { err "No match for: $input  (available: $(discover_ns | tr '\n' ' '))"; exit 1; }
+  echo "${found[@]}"
+}
+
+# --- ArgoCD ---
+
+argocd_crd_exists() { kubectl get crd applications.argoproj.io &>/dev/null; }
+
+# Namespace where ArgoCD Applications for target ns $1 live (default: argocd ns,
+# falls back to the target ns itself). Matched via spec.destination.namespace so
+# apps of OTHER namespaces sharing the argocd ns (prd-*, ci-*) are never touched.
+argocd_app_ns() {
+  local ns="$1"
+  if kubectl get applications.argoproj.io -n "$ARGOCD_NS" \
+       -o jsonpath='{range .items[?(@.spec.destination.namespace=="'"$ns"'")]}{.metadata.name}{"\n"}{end}' \
+       2>/dev/null | grep -q .; then
+    echo "$ARGOCD_NS"
+  else
+    echo "$ns"
+  fi
+}
+
+get_argocd_apps() {
+  argocd_crd_exists || return 0
+  local ns="$1" ans; ans=$(argocd_app_ns "$ns")
+  kubectl get applications.argoproj.io -n "$ans" \
+    -o jsonpath='{range .items[?(@.spec.destination.namespace=="'"$ns"'")]}{.metadata.name}{" "}{end}' 2>/dev/null
+}
+
+# Apps that actually manage a given Deployment in ns $1 (matched via status.resources).
+# Empty result = no app tracks this Deployment yet (e.g. never synced).
+get_deploy_apps() {
+  local ns="$1" deploy="$2"
+  local ans; ans=$(argocd_app_ns "$ns")
+  kubectl get applications.argoproj.io -n "$ans" -o json 2>/dev/null | python3 -c "
+import json, sys
+ns = '$ns'; deploy = '$deploy'
+found = []
+for a in json.load(sys.stdin)['items']:
+    if a['spec'].get('destination', {}).get('namespace') != ns:
+        continue
+    for r in a.get('status', {}).get('resources', []):
+        if r.get('kind') == 'Deployment' and r.get('name') == deploy and r.get('namespace', ns) == ns:
+            found.append(a['metadata']['name'])
+            break
+print(' '.join(found))
+" 2>/dev/null
+}
+
+# Flip spec.syncPolicy.automated — ON = add automated {prune, selfHeal}, OFF = remove automated.
+# ArgoCD v3: presence of "automated" key = auto-sync ON, absence = OFF.
+# No "enabled" sub-field — that's a v2 thing.
+toggle_autosync() {
+  # $1=ns, $2=on|off, $3=optional app list (default: all apps of ns)
+  local ns="$1" action="$2"
+  local ans apps
+  ans=$(argocd_app_ns "$ns")
+  if [[ -n "${3:-}" ]]; then
+    apps="$3"
+  else
+    apps=$(get_argocd_apps "$ns")
+  fi
+  [[ -z "$apps" ]] && return 0
+
+  for app in $apps; do
+    if [[ "$action" == "on" ]]; then
+      log "  ArgoCD: autosync ON (prune=true selfHeal=true) → $app"
+      kubectl patch application "$app" -n "$ans" --type merge \
+        -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' 2>/dev/null
+    else
+      log "  ArgoCD: autosync OFF → $app"
+      # Check if automated field exists before removing
+      local has_auto
+      has_auto=$(kubectl get application "$app" -n "$ans" -o jsonpath='{.spec.syncPolicy.automated}' 2>/dev/null)
+      if [[ -n "$has_auto" ]]; then
+        kubectl patch application "$app" -n "$ans" --type json \
+          -p '[{"op":"remove","path":"/spec/syncPolicy/automated"}]' 2>/dev/null
+      fi
+    fi
+  done
+}
+
+# --- Resource discovery & scaling ---
+
+# K-short-name mapping for display
+short_name() {
+  case "$1" in
+    deployments)  echo "deploy" ;;
+    statefulsets)  echo "sts" ;;
+    daemonsets)    echo "ds" ;;
+    *)             echo "$1" ;;
+  esac
+}
+
+display_name() {
+  case "$1" in
+    deployments)  echo "Deployments" ;;
+    statefulsets)  echo "StatefulSets" ;;
+    daemonsets)    echo "DaemonSets" ;;
+    *)             echo "$1" ;;
+  esac
+}
+
+get_scalables() {
+  # Returns: type/name current_replicas for all scalable resources in ns
+  local ns="$1"
+  for res in "${SCALABLE_RESOURCES[@]}"; do
+    local sn; sn=$(short_name "$res")
+    kubectl get "$res" -n "$ns" -o jsonpath="{range .items[*]}${sn}/{.metadata.name} {.spec.replicas}{'\n'}{end}" 2>/dev/null
+  done
+}
+
+save_and_scale_zero() {
+  local ns="$1"
+  local scale_json="{"
+  local first=true
+
+  for res in "${SCALABLE_RESOURCES[@]}"; do
+    local sn; sn=$(short_name "$res")
+    for item in $(kubectl get "$res" -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      local r
+      r=$(kubectl get "$res" "$item" -n "$ns" -o jsonpath='{.spec.replicas}')
+      $first || scale_json+=","
+      scale_json+="\"$sn/$item\":$r"
+      first=false
+      if [[ "$r" != "0" ]]; then
+        log "  scale $sn/$item → 0 (was $r)"
+        kubectl scale "$res" "$item" -n "$ns" --replicas=0 &>/dev/null
+      fi
+    done
+  done
+  scale_json+="}"
+  echo "$scale_json"
+}
+
+restore_scale() {
+  local ns="$1" scale_json="$2"
+  echo "$scale_json" | python3 -c "
+import sys, json, subprocess
+d = json.loads(sys.stdin.read())
+# Sort: infra (operator/postgres) first, then the rest
+infra_kw = ['operator', 'postgresql', 'postgres']
+infra = [(k,v) for k,v in d.items() if any(p in k.lower() for p in infra_kw)]
+rest  = [(k,v) for k,v in d.items() if not any(p in k.lower() for p in infra_kw)]
+for k, v in infra + rest:
+    kind, name = k.split('/', 1)
+    # Map short names back to full resource type
+    typ = {'deploy':'deployments','sts':'statefulsets','ds':'daemonsets'}.get(kind, kind+'s')
+    tag = 'infra-first' if (k,v) in infra else ''
+    print(f'  restore {kind}/{name} → {v} {tag}')
+    subprocess.run(['kubectl','scale',typ,name,'-n','$ns',f'--replicas={v}'], check=False)
+" 2>/dev/null
+}
+
+scale_all_to_1() {
+  # $1=ns — default fallback: scale every scalable resource to 1
+  local ns="$1"
+  for res in "${SCALABLE_RESOURCES[@]}"; do
+    for item in $(kubectl get "$res" -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      local r sn
+      r=$(kubectl get "$res" "$item" -n "$ns" -o jsonpath='{.spec.replicas}')
+      if [[ "$r" != "1" ]]; then
+        sn=$(short_name "$res")
+        log "  scale $sn/$item → 1 (was $r)"
+        kubectl scale "$res" "$item" -n "$ns" --replicas=1 2>/dev/null
+      fi
+    done
+  done
+}
+
+# --- Commands ---
+
+cmd_stop() {
+  local targets; targets=$(resolve_ns "${1:-all}")
+
+  for ns in $targets; do
+    local t; t=$(ns_type "$ns")
+    header "Stopping $(ns_label "$ns")"
+
+    local sf; sf=$(state_file "$ns")
+
+    # Step 1: Sandbox — ArgoCD autosync enabled=false (apps live in argocd ns)
+    if [[ "$t" == "sandbox" ]] && argocd_crd_exists && [[ -n "$(get_argocd_apps "$ns")" ]]; then
+      log "  Sandbox + ArgoCD — disabling autosync (enabled=false)..."
+      toggle_autosync "$ns" "off"
+    fi
+
+    # Step 2: Scale to 0
+    local scale_json
+    scale_json=$(save_and_scale_zero "$ns")
+
+    # Step 3: Save state (write raw JSON lines, assemble with python)
+    local tmpf="/tmp/.ctl-tmp-$$.json"
+    echo "$t" > "$tmpf.t"
+    echo "$scale_json" > "$tmpf.s"
+    python3 -c "
+import json
+t = open('$tmpf.t').read().strip()
+s = json.loads(open('$tmpf.s').read())
+json.dump({'type':t,'scale':s}, open('$sf','w'), indent=2)
+"
+    rm -f "$tmpf.t" "$tmpf.s"
+    log "  Saved → $sf"
+  done
+  echo; log "Done. '$0 start' to restore."
+}
+
+cmd_stop_deploy() {
+  # $1=deployment name, $2=namespace|prefix
+  # Sandbox: disable autosync (enabled=false) on the app(s) managing this Deployment, then scale 0.
+  # Production/other: just scale 0.
+  local deploy="$1" target="${2:-}"
+  if [[ -z "$deploy" || -z "$target" ]]; then
+    err "Usage: $0 stop-deploy <deployment> <namespace|prefix>"
+    exit 1
+  fi
+
+  local targets; targets=$(resolve_ns "$target")
+  for ns in $targets; do
+    local t; t=$(ns_type "$ns")
+    header "Stopping deploy/$deploy in $(ns_label "$ns")"
+
+    # Exists?
+    local r
+    r=$(kubectl get deployment "$deploy" -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+    if [[ -z "$r" ]]; then
+      err "  deployment $deploy not found in $ns — skipping"
+      continue
+    fi
+
+    if [[ "$t" == "sandbox" ]] && argocd_crd_exists && [[ -n "$(get_argocd_apps "$ns")" ]]; then
+      # Precision: disable autosync only on app(s) managing this Deployment
+      local apps; apps=$(get_deploy_apps "$ns" "$deploy")
+      if [[ -z "$apps" ]]; then
+        warn "  no ArgoCD app found managing deploy/$deploy — disabling autosync for all apps in $ns (fallback)"
+        apps=$(get_argocd_apps "$ns")
+      else
+        log "  ArgoCD: disabling autosync (enabled=false) on app(s): $apps"
+      fi
+      toggle_autosync "$ns" "off" "$apps"
+    fi
+
+    if [[ "$r" != "0" ]]; then
+      log "  scale deploy/$deploy → 0 (was $r)"
+      kubectl scale deployment "$deploy" -n "$ns" --replicas=0
+    else
+      log "  deploy/$deploy already at 0"
+    fi
+  done
+  echo; log "Done."
+}
+
+cmd_start_deploy() {
+  # $1=deployment name, $2=namespace|prefix, $3=optional replicas (default 1)
+  # Scales ONE deployment only. For sandbox: re-enables autosync on the specific
+  # app(s) managing this deployment (matching stop-deploy behavior).
+  local deploy="$1" target="${2:-}" replicas="${3:-1}"
+  if [[ -z "$deploy" || -z "$target" ]]; then
+    err "Usage: $0 start-deploy <deployment> <namespace|prefix> [replicas]"
+    exit 1
+  fi
+  [[ "$replicas" =~ ^[0-9]+$ ]] || replicas=1
+
+  local targets; targets=$(resolve_ns "$target")
+  for ns in $targets; do
+    local t; t=$(ns_type "$ns")
+    header "Starting deploy/$deploy in $(ns_label "$ns")"
+
+    # Exists?
+    local r
+    r=$(kubectl get deployment "$deploy" -n "$ns" -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+    if [[ -z "$r" ]]; then
+      err "  deployment $deploy not found in $ns — skipping"
+      continue
+    fi
+
+    if [[ "$t" == "sandbox" ]] && argocd_crd_exists && [[ -n "$(get_argocd_apps "$ns")" ]]; then
+      local apps; apps=$(get_deploy_apps "$ns" "$deploy")
+      if [[ -z "$apps" ]]; then
+        warn "  no ArgoCD app found managing deploy/$deploy — enabling autosync for all apps in $ns (fallback)"
+        apps=$(get_argocd_apps "$ns")
+      else
+        log "  ArgoCD: enabling autosync on app(s): $apps"
+      fi
+      toggle_autosync "$ns" "on" "$apps"
+    fi
+
+    if [[ "$r" == "$replicas" ]]; then
+      log "  deploy/$deploy already at $replicas"
+    else
+      log "  scale deploy/$deploy → $replicas (was $r)"
+      kubectl scale deployment "$deploy" -n "$ns" --replicas="$replicas"
+    fi
+  done
+  echo; log "Done."
+}
+
+cmd_start() {
+  local targets; targets=$(resolve_ns "${1:-all}")
+
+  for ns in $targets; do
+    header "Starting $(ns_label "$ns")"
+    local sf; sf=$(state_file "$ns")
+
+    local has_state=false has_argocd=false
+    [[ -f "$sf" ]] && has_state=true
+    if argocd_crd_exists && [[ -n "$(get_argocd_apps "$ns")" ]]; then
+      has_argocd=true
+    fi
+
+    local t; t=$(ns_type "$ns")
+
+    if [[ "$has_state" == "false" ]]; then
+      if [[ "$has_argocd" == "false" ]]; then
+        # No state file AND no ArgoCD — scale everything to 1 as fallback
+        warn "  No state file and no ArgoCD — scaling all to 1 (default)"
+        scale_all_to_1 "$ns"
+        continue
+      fi
+      if [[ "$t" == "sandbox" ]]; then
+        # Sandbox + ArgoCD, no state: re-enable autosync — ArgoCD restores from git
+        warn "  No state file — relying on ArgoCD autosync"
+        log "  Sandbox + ArgoCD — enabling autosync (enabled=true)..."
+        toggle_autosync "$ns" "on"
+        continue
+      fi
+      # Production + ArgoCD, no state: prd-* never touches ArgoCD — scale to 1 directly
+      warn "  No state file — scaling all to 1 (default)"
+      scale_all_to_1 "$ns"
+      continue
+    fi
+
+    # Has state file
+    local scale_json
+    t=$(python3 -c "import json; print(json.load(open('$sf'))['type'])")
+    scale_json=$(python3 -c "import json; print(json.dumps(json.load(open('$sf'))['scale']))")
+
+    # If all saved replicas are 0 and no ArgoCD, treat as "no valid state"
+    local all_zero
+    all_zero=$(python3 -c "
+import json
+d = json.loads(open('$sf').read())['scale']
+print('yes' if all(v == 0 for v in d.values()) else 'no')
+")
+    if [[ "$all_zero" == "yes" && "$has_argocd" == "false" ]]; then
+      warn "  Saved state has all zeros and no ArgoCD — scaling to 1 (default)"
+      scale_all_to_1 "$ns"
+      rm -f "$sf"
+      continue
+    fi
+
+    if [[ "$t" == "sandbox" && "$has_argocd" == "true" ]]; then
+      # Sandbox + ArgoCD: re-enable autosync (enabled=true) — ArgoCD restores from git
+      log "  Sandbox + ArgoCD — enabling autosync (enabled=true)..."
+      toggle_autosync "$ns" "on"
+    else
+      # Production/other (or sandbox without ArgoCD): restore saved replicas
+      log "  Restoring saved replicas..."
+      restore_scale "$ns" "$scale_json"
+    fi
+
+    rm -f "$sf"
+  done
+  echo; log "Done. '$0 status' to verify."
+}
+
+cmd_status() {
+  local targets; targets=$(resolve_ns "${1:-all}")
+
+  for ns in $targets; do
+    header "$(ns_label "$ns")"
+
+    for res in "${SCALABLE_RESOURCES[@]}"; do
+      local items
+      items=$(kubectl get "$res" -n "$ns" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.readyReplicas}{"\t"}{.spec.replicas}{"\n"}{end}' 2>/dev/null)
+      [[ -z "$items" ]] && continue
+      echo "  $(display_name "$res"):"
+      echo "$items" | while IFS=$'\t' read -r name ready desired; do
+        ready=${ready:-0}; desired=${desired:-0}
+        printf "    %-40s ready=%-3s desired=%s\n" "$name" "$ready" "$desired"
+      done
+    done
+
+    # ArgoCD
+    if argocd_crd_exists; then
+      local apps; apps=$(get_argocd_apps "$ns")
+      if [[ -n "$apps" ]]; then
+        local ans; ans=$(argocd_app_ns "$ns")
+        echo "  argocd:"
+        for app in $apps; do
+          local sync health auto en
+          sync=$(kubectl get application "$app" -n "$ans" -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "N/A")
+          health=$(kubectl get application "$app" -n "$ans" -o jsonpath='{.status.health.status}' 2>/dev/null || echo "N/A")
+          auto=$(kubectl get application "$app" -n "$ans" -o jsonpath='{.spec.syncPolicy.automated}' 2>/dev/null || echo "")
+          en=$(kubectl get application "$app" -n "$ans" -o jsonpath='{.spec.syncPolicy.automated.enabled}' 2>/dev/null || true)
+          if [[ -z "$auto" || "$en" == "false" ]]; then auto="OFF"; else auto="ON"; fi
+          echo "    $app  sync=$sync  health=$health  autosync=$auto"
+        done
+      fi
+    fi
+
+    # Saved state?
+    local sf; sf=$(state_file "$ns")
+    if [[ -f "$sf" ]]; then
+      echo "  ⚠ STOPPED:"
+      python3 -c "
+import json; d=json.load(open('$sf'))
+for k,v in d['scale'].items(): print(f'    {k} → {v}')
+" 2>/dev/null
+    fi
+    echo
+  done
+}
+
+cmd_restart() {
+  local targets; targets=$(resolve_ns "${1:-all}")
+
+  for ns in $targets; do
+    header "Rolling restart $(ns_label "$ns")"
+
+    local count=0
+    for res in "${SCALABLE_RESOURCES[@]}"; do
+      local items
+      items=$(kubectl get "$res" -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+      [[ -z "$items" ]] && continue
+
+      for item in $items; do
+        log "  rollout restart $(short_name "$res")/$item"
+        kubectl rollout restart "$res" "$item" -n "$ns" 2>/dev/null && count=$((count + 1)) || true
+      done
+    done
+
+    if [[ "$count" -eq 0 ]]; then
+      warn "  No scalable resources found in $ns"
+    else
+      log "  Waiting for rollout to complete..."
+      for res in "${SCALABLE_RESOURCES[@]}"; do
+        for item in $(kubectl get "$res" -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+          kubectl rollout status "$res" "$item" -n "$ns" --timeout=300s 2>/dev/null || warn "  rollout timeout: $(short_name "$res")/$item"
+        done
+      done
+    fi
+  done
+  echo; log "Done."
+}
+
+cmd_clean() {
+  local targets; targets=$(resolve_ns "${1:-all}")
+  for ns in $targets; do
+    header "Cleaning $(ns_label "$ns")"
+    local before; before=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l)
+    kubectl delete pods -n "$ns" --field-selector=status.phase=Succeeded --grace-period=0 --force 2>/dev/null || true
+    kubectl delete pods -n "$ns" --field-selector=status.phase=Failed --grace-period=0 --force 2>/dev/null || true
+    local after; after=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l)
+    log "  $before → $after pods ($(( before - after )) cleaned)"
+  done
+}
+
+# --- Usage ---
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") <command> [namespace|prefix]
+
+Commands:
+  start  [ns]   Restore (sandbox: autosync enabled=true, prod: restore replicas,
+             no state → scale all to 1; prd-* never touches ArgoCD)
+  start-deploy <deploy> <ns> [replicas]  Start a single deployment (scale only; sandbox: app autosync
+                             stays off — run 'start <ns>' to re-enable autosync later)
+  stop   [ns]   Stop all (sandbox: autosync enabled=false + scale 0, prod: save + scale 0)
+  stop-deploy <deploy> <ns>  Stop a single deployment (sandbox: autosync enabled=false
+                             on the owning app only, prod: just scale 0)
+  status [ns]   Overview
+  restart [ns]  Rollout restart all Deployments/StatefulSets/DaemonSets
+#  clean  [ns]   Delete completed/failed pods
+
+Namespace auto-discovery:
+  snd-*   Sandbox    → Stop: autosync enabled=false + scale 0
+                      → Start: autosync enabled=true (ArgoCD syncs from git)
+  prd-*   Production → Stop: save replicas + scale 0
+                      → Start: restore saved replicas
+
+Scalable resources: Deployments, DaemonSets, StatefulSets
+
+ArgoCD: applications are located via spec.destination.namespace (default argocd ns,
+override with ARGOCD_NS). Sync policy is only touched for snd-* namespaces.
+
+Examples:
+  k8s-ctl.sh stop snd       # stop all sandbox namespaces
+  k8s-ctl.sh start prd-dwh  # restore production
+  k8s-ctl.sh status          # all namespaces
+EOF
+  exit 1
+}
+
+case "${1:-}" in
+  start)       cmd_start "${2:-all}" ;;
+  start-deploy) cmd_start_deploy "${2:-}" "${3:-}" "${4:-}" ;;
+  stop)        cmd_stop  "${2:-all}" ;;
+  stop-deploy) cmd_stop_deploy "${2:-}" "${3:-}" ;;
+  restart)     cmd_restart "${2:-all}" ;;
+  status)      cmd_status "${2:-all}" ;;
+  clean)       cmd_clean "${2:-all}" ;;
+  *)           usage ;;
+esac

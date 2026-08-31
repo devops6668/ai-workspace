@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pipeline-runner
+  namespace: devops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-ctl-role
+rules:
+  # Namespace discovery
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  # Scalable resources (stop/start/scale)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "patch", "update"]
+  # Scale subresource (kubectl scale uses patch on /scale subresource)
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "patch", "update"]
+  # Pod cleanup (cmd_clean)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  # ArgoCD Applications (get/list/patch)
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "applications/status"]
+    verbs: ["get", "list", "patch"]
+  # CRD check (argocd_crd_exists)
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-ctl-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-ctl-role
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner
+    namespace: devops

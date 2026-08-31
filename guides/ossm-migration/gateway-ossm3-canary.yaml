@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-ingressgateway-ossm3
+  namespace: istio-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: istio-ingressgateway
+      istio: ingressgateway
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: gateway
+      labels:
+        app: istio-ingressgateway
+        istio: ingressgateway
+        istio.io/rev: basic-v1-24-3
+        sidecar.istio.io/inject: "true"
+    spec:
+      serviceAccountName: istio-ingressgateway-service-account
+      nodeSelector:
+        node-role.kubernetes.io/infra: ''
+      tolerations:
+        - effect: NoExecute
+          key: node-role.kubernetes.io/infra
+          operator: Equal
+          value: reserved
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/infra
+          operator: Equal
+          value: reserved
+      containers:
+        - name: istio-proxy
+          image: auto

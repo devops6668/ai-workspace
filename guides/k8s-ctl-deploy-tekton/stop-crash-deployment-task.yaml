@@ -1,0 +1,100 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: stop-crash-deployment-task
+  namespace: devops
+spec:
+  params:
+    - name: namespace
+      type: string
+      description: "Target namespace (e.g. snd-demo3)"
+    - name: restart-count
+      type: string
+      description: "Restart count threshold (e.g. 3)"
+  steps:
+    - name: find-and-stop-crash
+      image: bitnami/kubectl:latest
+      script: |
+        #!/bin/sh
+        set -e
+
+        NS="$(params.namespace)"
+        THRESHOLD="$(params.restart-count)"
+
+        echo "=== Parameters ==="
+        echo "Namespace:         $NS"
+        echo "Restart threshold: $THRESHOLD"
+        echo ""
+
+        # Get all deployments in namespace
+        DEPLOYMENTS=$(kubectl get deployment -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+
+        if [ -z "$DEPLOYMENTS" ]; then
+          echo "No deployments found in namespace $NS"
+          exit 0
+        fi
+
+        STOPPED=0
+
+        for DEPLOY in $DEPLOYMENTS; do
+          echo "--- Checking deployment: $DEPLOY ---"
+
+          # Get pods for this deployment using label selector
+          SELECTOR=$(kubectl get deployment "$DEPLOY" -n "$NS" -o jsonpath='{.spec.selector.matchLabels}' 2>/dev/null)
+          echo "  Selector: $SELECTOR"
+
+          # Get pod names for this deployment
+          PODS=$(kubectl get pods -n "$NS" -l "app=$DEPLOY" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+
+          if [ -z "$PODS" ]; then
+            echo "  No pods found for $DEPLOY"
+            continue
+          fi
+
+          for POD in $PODS; do
+            RESTARTS=$(kubectl get pod "$POD" -n "$NS" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+            echo "  Pod: $POD  restarts=$RESTARTS"
+
+            if [ "$RESTARTS" -ge "$THRESHOLD" ] 2>/dev/null; then
+              echo "  -> THRESHOLD MET ($RESTARTS >= $THRESHOLD)"
+
+              # Scale to 0
+              echo "  [ACTION] Scaling $DEPLOY to 0"
+              kubectl scale deployment "$DEPLOY" -n "$NS" --replicas=0
+              echo "  [OK] Scaled to 0"
+              STOPPED=$((STOPPED + 1))
+
+              # If snd-* namespace, disable ArgoCD auto-sync
+              case "$NS" in
+                snd-*)
+                  echo "  [INFO] snd-* namespace, checking ArgoCD..."
+                  APP_NAME=$(kubectl get applications -n argocd -o json 2>/dev/null | grep -o '"name":"[^"]*"' | while read line; do
+                    name=$(echo "$line" | cut -d'"' -f4)
+                    ns=$(kubectl get application "$name" -n argocd -o jsonpath='{.spec.destination.namespace}' 2>/dev/null || true)
+                    if [ "$ns" = "$NS" ]; then
+                      echo "$name"
+                      break
+                    fi
+                  done)
+
+                  if [ -n "$APP_NAME" ]; then
+                    HAS_AUTO=$(kubectl get application "$APP_NAME" -n argocd -o jsonpath='{.spec.syncPolicy.automated}' 2>/dev/null || true)
+                    if [ -n "$HAS_AUTO" ]; then
+                      echo "  [ACTION] Disabling auto-sync for $APP_NAME"
+                      kubectl patch application "$APP_NAME" -n argocd --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}' 2>/dev/null
+                      echo "  [OK] Auto-sync disabled"
+                    else
+                      echo "  [SKIP] Auto-sync already disabled"
+                    fi
+                  fi
+                  ;;
+              esac
+
+              break 2  # Exit both loops
+            fi
+          done
+        done
+
+        echo ""
+        echo "=== Summary ==="
+        echo "Deployments stopped: $STOPPED"

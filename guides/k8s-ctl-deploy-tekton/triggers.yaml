@@ -1,0 +1,76 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: k8s-ctl-trigger-template
+  namespace: devops
+spec:
+  params:
+    - name: action
+      description: "Command: start | stop | status | stop-deploy | start-deploy | restart | clean"
+    - name: target
+      description: "Namespace name or prefix (e.g., snd-dwh, snd, all)"
+    - name: deploy-name
+      description: "Deployment name (required for stop-deploy / start-deploy only)"
+      default: ""
+    - name: replicas
+      description: "Replica count for start-deploy (default: 1)"
+      default: "1"
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: TaskRun
+      metadata:
+        generateName: k8s-ctl-run-
+        namespace: devops
+      spec:
+        serviceAccountName: pipeline-runner
+        taskRef:
+          kind: Task
+          name: k8s-ctl
+        params:
+          - name: action
+            value: $(tt.params.action)
+          - name: target
+            value: $(tt.params.target)
+          - name: deploy-name
+            value: $(tt.params.deploy-name)
+          - name: replicas
+            value: $(tt.params.replicas)
+        workspaces:
+          - name: state
+            persistentVolumeClaim:
+              claimName: k8s-ctl-state
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: k8s-ctl-trigger
+  namespace: devops
+spec:
+  interceptors:
+    - ref:
+        name: "cel"
+      params:
+        - name: "filter"
+          value: >-
+            header.match('X-K8sCtl-Event', 'run')
+  bindings:
+    - name: action
+      value: $(body.action)
+    - name: target
+      value: $(body.target)
+    - name: deploy-name
+      value: $(body.deploy-name)
+    - name: replicas
+      value: $(body.replicas)
+  template:
+    ref: k8s-ctl-trigger-template
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: k8s-ctl-eventlistener
+  namespace: devops
+spec:
+  serviceAccountName: pipeline-runner
+  triggers:
+    - triggerRef: k8s-ctl-trigger

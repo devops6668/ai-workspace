@@ -1,0 +1,36 @@
+# =============================================================================
+# Docker Compose for Local Testing (jupyter-ai v3.x)
+# =============================================================================
+
+version: '3.8'
+
+services:
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.k8s
+    container_name: jupyter-ai
+    ports:
+      - "8888:8888"
+    environment:
+      # JupyterLab Settings
+      - JUPYTER_ENABLE_LAB=yes
+      
+      # AI Model Settings (OpenAI-compatible API)
+      - OPENAI_API_BASE=https://apihub.agnes-ai.com/v1
+      - OPENAI_API_KEY=sk-your-key-here
+      
+      # Optional: Add more API keys
+      # - ANTHROPIC_API_KEY=sk-ant-your-key
+    volumes:
+      - jupyter-data:/home/jovyan
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/api"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  jupyter-data:
+    driver: local

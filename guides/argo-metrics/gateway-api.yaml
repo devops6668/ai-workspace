@@ -1,0 +1,106 @@
+# Gateway API Resources for OTel Collector
+# Exposes otel-collector via HTTPS with cert-manager TLS
+# Namespace: elastic-system (routes) + envoy-gateway-system (certificate)
+---
+# TLS Certificate (cert-manager)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: otel-luban-paulhome-tls
+  namespace: envoy-gateway-system
+spec:
+  secretName: otel-luban-paulhome-tls
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+  commonName: otel.luban.paulhome.local
+  dnsNames:
+    - otel.luban.paulhome.local
+  duration: 2160h
+  renewBefore: 720h
+---
+# HTTPRoute - OTLP HTTP + healthcheck
+# IMPORTANT: No catch-all PathPrefix "/" rule!
+# Catch-all intercepts gRPC traffic and returns HTTP/JSON,
+# causing "unexpected content-type application/json" errors.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: otel-collector-route
+  namespace: elastic-system
+spec:
+  hostnames:
+    - otel.luban.paulhome.local
+  parentRefs:
+    - name: my-shared-gateway
+      namespace: envoy-gateway-system
+      sectionName: https-otel
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/traces
+      backendRefs:
+        - name: otel-collector
+          port: 4318
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/metrics
+      backendRefs:
+        - name: otel-collector
+          port: 4318
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/logs
+      backendRefs:
+        - name: otel-collector
+          port: 4318
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /debug/pprof
+      backendRefs:
+        - name: otel-collector
+          port: 1777
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+      backendRefs:
+        - name: otel-collector
+          port: 13133
+    - matches:
+        - path:
+            type: Exact
+            value: /ready
+      backendRefs:
+        - name: otel-collector
+          port: 13133
+    - matches:
+        - path:
+            type: Exact
+            value: /
+      backendRefs:
+        - name: otel-collector
+          port: 13133
+---
+# GRPCRoute - OTLP gRPC
+# All gRPC traffic routes to port 4317
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: otel-collector-grpc-route
+  namespace: elastic-system
+spec:
+  hostnames:
+    - otel.luban.paulhome.local
+  parentRefs:
+    - name: my-shared-gateway
+      namespace: envoy-gateway-system
+      sectionName: https-otel
+  rules:
+    - backendRefs:
+        - name: otel-collector
+          port: 4317

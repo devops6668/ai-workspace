@@ -1,0 +1,94 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: stop-crash-eventlistener
+  namespace: devops
+spec:
+  description: |
+    Wrapper task — calls EventListener to create a TaskRun with pipeline-runner SA.
+  params:
+    - name: namespace
+      type: string
+      description: "Target namespace (e.g. snd-demo3)"
+    - name: restart-count
+      type: string
+      description: "Restart count threshold (e.g. 3)"
+  steps:
+    - name: call-eventlistener
+      image: curlimages/curl:latest
+      script: |
+        #!/bin/sh
+
+        EVENTLISTENER="http://el-stop-crash-eventlistener.devops.svc.cluster.local:8080"
+
+        echo "=== stop-crash-eventlistener ==="
+        echo "namespace:     $(params.namespace)"
+        echo "restart-count: $(params.restart-count)"
+        echo "================================="
+
+        BODY=$(cat <<EOFB
+        {
+          "namespace": "$(params.namespace)",
+          "restart-count": "$(params.restart-count)"
+        }
+        EOFB
+        )
+
+        echo "Calling EventListener at ${EVENTLISTENER} ..."
+        RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X POST \
+          -H "Content-Type: application/json" \
+          -H "X-StopCrash-Event: run" \
+          -d "${BODY}" \
+          "${EVENTLISTENER}")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY_RESP=$(echo "$RESPONSE" | head -n -1)
+
+        echo "HTTP ${HTTP_CODE}"
+        echo "Response: ${BODY_RESP}"
+
+        if [ "${HTTP_CODE}" = "202" ]; then
+          EVENT_ID=$(echo "${BODY_RESP}" | grep -o '"eventID":"[^"]*"' | cut -d'"' -f4)
+          echo ""
+          echo "TaskRun created! EventID: ${EVENT_ID}"
+          echo "Checking TaskRun status..."
+
+          sleep 3
+
+          TR_NAME=$(kubectl get taskrun -n devops \
+            -l triggers.tekton.dev/triggers-eventid="${EVENT_ID}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+          if [ -n "${TR_NAME}" ]; then
+            echo "TaskRun: ${TR_NAME}"
+            echo "Waiting for completion..."
+
+            kubectl wait taskrun "${TR_NAME}" -n devops \
+              --for=condition=Succeeded --timeout=600s 2>/dev/null || true
+
+            STATUS=$(kubectl get taskrun "${TR_NAME}" -n devops \
+              -o jsonpath='{.status.conditions[0].status}')
+            REASON=$(kubectl get taskrun "${TR_NAME}" -n devops \
+              -o jsonpath='{.status.conditions[0].reason}')
+
+            echo ""
+            echo "=== TaskRun ${TR_NAME}: ${REASON} (${STATUS}) ==="
+
+            STEP_POD=$(kubectl get pods -n devops \
+              -l tekton.dev/taskRun="${TR_NAME}" \
+              --sort-by=.metadata.creationTimestamp \
+              -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null)
+
+            if [ -n "${STEP_POD}" ]; then
+              echo ""
+              kubectl logs "${STEP_POD}" -n devops -c step-find-and-stop-crash 2>/dev/null
+            fi
+          else
+            echo "WARNING: Could not find TaskRun for event ${EVENT_ID}"
+            echo "Check manually: kubectl get taskrun -n devops"
+          fi
+        else
+          echo "ERROR: EventListener returned HTTP ${HTTP_CODE}"
+          exit 1
+        fi

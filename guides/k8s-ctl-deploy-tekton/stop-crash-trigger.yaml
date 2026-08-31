@@ -1,0 +1,21 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: stop-crash-trigger
+  namespace: devops
+spec:
+  interceptors:
+    - ref:
+        name: cel
+      params:
+        - name: filter
+          value: "header.match('X-StopCrash-Event', 'run')"
+  bindings:
+    - kind: TriggerBinding
+      name: namespace
+      value: $(body.namespace)
+    - kind: TriggerBinding
+      name: restart-count
+      value: $(body.restart-count)
+  template:
+    ref: stop-crash-trigger-template

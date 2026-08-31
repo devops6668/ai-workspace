@@ -1,0 +1,13 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: istio-mesh
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          service-mesh: enabled
+  podSelector: {}
+  policyTypes:
+  - Ingress

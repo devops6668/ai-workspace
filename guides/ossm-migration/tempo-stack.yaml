@@ -1,0 +1,42 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-tempo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tempo-storage
+  namespace: openshift-tempo
+type: Opaque
+stringData:
+  endpoint: https://minio.minio-operator.svc:9000
+  bucket: tempo
+  access_key_id: tempo
+  access_key_secret: tempopassword
+---
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: tempo
+  namespace: openshift-tempo
+spec:
+  storageSize: 10Gi
+  storage:
+    secret:
+      name: tempo-storage
+      type: s3
+  template:
+    gateway:
+      enabled: false
+    queryFrontend:
+      jaegerQuery:
+        enabled: true
+    compactor:
+      replicationFactor: 1
+  resources:
+    total:
+      limits:
+        memory: 2Gi
+        cpu: 1000m

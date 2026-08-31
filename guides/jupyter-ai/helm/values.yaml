@@ -1,0 +1,110 @@
+# =============================================================================
+# JupyterHub Helm Chart - Custom Values (jupyter-ai v3.x)
+# =============================================================================
+# Usage:
+#   helm upgrade --install jupyterhub jupyterhub/jupyterhub \
+#     --namespace jupyterhub \
+#     --create-namespace \
+#     -f values.yaml
+#
+# Reference: https://z2jh.jupyter.org/en/stable/resources/reference.html
+# =============================================================================
+
+# =============================================================================
+# Hub Configuration
+# =============================================================================
+hub:
+  image:
+    name: harbor.devops.local/jupyter/jupyterhub-ai
+    tag: latest
+  config:
+    JupyterHub:
+      authenticator_class: "dummy"  # For testing only!
+      admin_access: true
+      allowed_users:
+        - admin
+        - paul.wong
+      default_url: "/lab"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 2Gi
+
+# =============================================================================
+# Single User (Notebook) Configuration
+# =============================================================================
+singleuser:
+  image:
+    name: harbor.devops.local/jupyter/jupyter-ai
+    tag: latest
+  cmd: null
+  extraEnv:
+    # API Configuration (OpenAI-compatible)
+    OPENAI_API_BASE: "https://apihub.agnes-ai.com/v1"
+    OPENAI_API_KEY: ""  # Injected via Secret or set here
+    # Performance
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PIP_NO_CACHE_DIR: "off"
+  storage:
+    capacity: 10Gi
+    storageClass: nfs-csi
+    homeMountPath: /home/jovyan
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+
+# =============================================================================
+# Profile List (Multiple Image Options)
+# =============================================================================
+profileList:
+  - description: Jupyter AI with Agnes-2.0-Flash model for AI-assisted coding
+    display_name: AI Coding (Agnes)
+    kubespawner_override:
+      image: harbor.devops.local/jupyter/jupyter-ai:latest
+  - default: true
+    description: "To avoid too much bells and whistles: Python."
+    display_name: Minimal environment
+  - description: "If you want the additional bells and whistles: Python, R, and Julia."
+    display_name: Datascience environment
+    kubespawner_override:
+      image: jupyter/datascience-notebook:x86_64-python-3.11.6
+
+# =============================================================================
+# Proxy (public) Configuration
+# =============================================================================
+proxy:
+  service:
+    type: ClusterIP
+  https:
+    enabled: false
+
+# =============================================================================
+# Secrets (API Keys)
+# =============================================================================
+# Create secret first:
+#   kubectl create secret generic agnes-api-key \
+#     --namespace jupyterhub \
+#     --from-literal=OPENAI_API_KEY=sk-your-key
+#
+# Then reference in singleuser.extraEnv:
+#   extraEnv:
+#     OPENAI_API_KEY:
+#       valueFrom:
+#         secretKeyRef:
+#           name: agnes-api-key
+#           key: OPENAI_API_KEY
+
+# =============================================================================
+# Cull Settings (Optional)
+# =============================================================================
+cull:
+  enabled: false
+  timeout: 300
+  every: 150

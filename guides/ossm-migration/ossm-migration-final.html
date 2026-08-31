@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'dark', flowchart:{useMaxWidth:false, htmlLabels:true, curve:'linear'}})</script>
+<style>
+body { margin: 0; padding: 16px; background: #0d1117; font-family: 'Segoe UI', monospace; overflow-x: hidden; }
+.mermaid { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="mermaid">
+graph TB
+    Start([Start Migration]) --> Prep
+
+    subgraph Prep[Preparation]
+        Prep1["Upgrade SMCP 2.6.11 to 2.6.14"]
+        Prep2["Operator update mode to Manual"]
+        Prep3["Install istioctl v1.24.x"]
+        Prep4["Validate ServiceEntry less than 256 hosts"]
+        Prep5["Inventory TLS Secrets hello-world1 to 8"]
+    end
+
+    Prep1 --> Prep2 --> Prep3 --> Prep4 --> Prep5
+
+    Prep5 --> Disable
+
+    subgraph Disable[Disable OSSM 2 Add-ons]
+        D1["Disable Prometheus"]
+        D2["Disable Grafana"]
+        D3["Disable Kiali"]
+        D4["Disable Jaeger tracing"]
+        D5["Disable IOR openshiftRoute"]
+        D6["Disable Network Policy Mgmt"]
+    end
+
+    D1 --> D2 --> D3 --> D4 --> D5 --> D6
+
+    D6 --> GWCheck
+
+    subgraph GWCheck[Gateway Injection Check]
+        G1["Check if gateway is SMCP-managed"]
+        G2{"Is SMCP-managed?"}
+        G3["Create Canary Gateway Deployment"]
+        G4["Gradually Shift Traffic"]
+        G5["Detach old Service from SMCP"]
+        G6["Disable old SMCP gateway"]
+        G7["Rename canary to istio-ingressgateway"]
+    end
+
+    G1 --> G2
+    G2 -->|Yes| G3 --> G4 --> G5 --> G6 --> G7
+    G2 -->|No| NetPol
+
+    subgraph NetPol[Observability and NetPol Prep]
+        N1["Configure OpenShift UWM Prometheus replacement"]
+        N2["Install Distributed Tracing Platform Tempo"]
+        N3["Install Kiali Operator and Kiali CR"]
+        N4["Label namespaces service-mesh enabled"]
+        N5["Pre-create NetworkPolicies"]
+    end
+
+    N1 --> N2 --> N3 --> N4 --> N5
+
+    N5 --> Verify2
+
+    subgraph Verify2[Phase 1 Verify OSSM 2 Health]
+        V1["SMCP ComponentsReady"]
+        V2["SMMR lists correct members"]
+        V3["All workloads running"]
+        V4["All proxies connected to OSSM 2"]
+    end
+
+    V1 --> V2 --> V3 --> V4
+
+    V4 --> Install3
+
+    subgraph Install3[Phase 2 Install OSSM 3 Operator]
+        I1["Install OSSM 3 Operator openshift-operators"]
+        I2["Approve InstallPlan"]
+        I3["Verify operator pod running"]
+        I4["Create IstioCNI resource"]
+        I5["Verify CNI DaemonSet on all nodes"]
+    end
+
+    I1 --> I2 --> I3 --> I4 --> I5
+
+    I5 --> Deploy3
+
+    subgraph Deploy3[Phase 3 Deploy OSSM 3 Control Plane]
+        C1["Create Istio resource RevisionBased"]
+        C2["Apply Istio YAML"]
+        C3["Verify shared root cert istio-ca-secret"]
+        C4["Capture ACTIVE_REVISION"]
+        C5["Create PeerAuthentication STRICT"]
+        C6["Create DestinationRule ISTIO_MUTUAL"]
+    end
+
+    C1 --> C2 --> C3 --> C4 --> C5 --> C6
+
+    C6 --> MigGW
+
+    subgraph MigGW[Phase 4 Migrate Gateway]
+        GW1["Label istio-system namespace"]
+        GW2{"Choose Strategy"}
+        GW3["Deploy Canary Gateway"]
+        GW4["Shift Traffic scale canary up old down"]
+        GW5["Delete old gateway rename canary"]
+        GW6["Verify istioctl ps curl endpoints"]
+        GW7["rollout restart deployment"]
+    end
+
+    GW1 --> GW2
+    GW2 -->|Canary Zero Downtime| GW3 --> GW4 --> GW5
+    GW2 -->|In-Place Faster| GW7 --> GW5
+    GW5 --> GW6
+
+    GW6 --> MigNS
+
+    subgraph MigNS[Phase 5 Migrate Workload Namespaces]
+        NS1["Migrate project-01 label and restart"]
+        NS2["Migrate project-02"]
+        NS3["Migrate project-03"]
+        NS4["Migrate project-04"]
+        NS5["Migrate devops namespace"]
+        NS6["Verify no workloads on OSSM 2"]
+    end
+
+    NS1 --> NS2 --> NS3 --> NS4 --> NS5 --> NS6
+
+    NS6 --> FinalGW
+
+    subgraph FinalGW[Phase 6 Finalize Gateway]
+        FG1["Verify Gateway config listeners and certs"]
+        FG2["End-to-end traffic test all 8 endpoints"]
+        FG3["Verify mTLS between workloads"]
+        FG4{"Move to istio-ingress NS?"}
+        FG5["Create istio-ingress namespace"]
+        FG6["Copy TLS Secrets"]
+        FG7["Create RBAC and SA"]
+        FG8["Deploy gateway in istio-ingress"]
+        FG9["Move OpenShift Routes"]
+        FG10["Scale down old gateway"]
+    end
+
+    FG1 --> FG2 --> FG3 --> FG4
+    FG4 -->|Yes| FG5 --> FG6 --> FG7 --> FG8 --> FG9 --> FG10
+    FG4 -->|No| Cleanup
+
+    subgraph Cleanup[Phase 7 Clean Up OSSM 2]
+        CL1["Final verification all workloads on OSSM 3"]
+        CL2["Delete SMCP basic"]
+        CL3["Delete SMMR default"]
+        CL4["Delete SM resources across all namespaces"]
+        CL5["Delete OSSM 2 Operator subscription and CSV"]
+        CL6["Remove Maistra CRDs"]
+        CL7["Remove Maistra labels from namespaces"]
+        CL8["Recreate NetworkPolicies for OSSM 3"]
+    end
+
+    CL1 --> CL2 --> CL3 --> CL4 --> CL5 --> CL6 --> CL7 --> CL8
+
+    CL8 --> Validate
+
+    subgraph Validate[Post-Migration Validation]
+        VA1["Control Plane Health oc get istios"]
+        VA2["Proxy Sync Status SYNCED"]
+        VA3["Config Analysis istioctl analyze"]
+        VA4["Gateway Cert Verification SDS"]
+        VA5["End-to-End Tests all 8 endpoints"]
+        VA6["mTLS Verification PeerAuthentication"]
+        VA7["Kiali Mesh Topology check"]
+    end
+
+    VA1 --> VA2 --> VA3 --> VA4 --> VA5 --> VA6 --> VA7
+
+    VA7 --> End([Migration Complete])
+
+    style Start fill:#238636,stroke:#2ea043,stroke-width:2px,color:#fff
+    style End fill:#238636,stroke:#2ea043,stroke-width:2px,color:#fff
+    style GW2 fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff
+    style FG4 fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff
+    style G2 fill:#7c2d12,stroke:#f97316,stroke-width:2px,color:#fff
+</div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: stop-crash-trigger-template
+  namespace: devops
+spec:
+  params:
+    - name: namespace
+      description: "Target namespace (e.g. snd-demo3)"
+    - name: restart-count
+      description: "Restart count threshold (e.g. 3)"
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: TaskRun
+      metadata:
+        generateName: stop-crash-$(tt.params.namespace)-
+        namespace: devops
+      spec:
+        serviceAccountName: pipeline-runner
+        taskRef:
+          kind: Task
+          name: stop-crash-deployment-task
+        params:
+          - name: namespace
+            value: $(tt.params.namespace)
+          - name: restart-count
+            value: $(tt.params.restart-count)
