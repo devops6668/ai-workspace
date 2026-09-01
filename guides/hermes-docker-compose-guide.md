@@ -954,9 +954,9 @@ services:
 
 | Voice ID | 性別 | 風格 |
 |----------|------|------|
-| `zh-HK-WanLungNeural` | 男聲 | 友善、正面（推薦） |
-| `zh-HK-HiuMaanNeural` | 女聲 | 友善、正面 |
+| `zh-HK-HiuMaanNeural` | 女聲 | 友善、正面（**預設**） |
 | `zh-HK-HiuGaaiNeural` | 女聲 | 友善、正面 |
+| `zh-HK-WanLungNeural` | 男聲 | 友善、正面 |
 
 #### 設定步驟
 
@@ -993,8 +993,8 @@ stt:
 tts:
   provider: "edge"            # Edge TTS，免費
   edge:
-    voice: "zh-HK-WanLungNeural"   # 廣東話男聲
-    # voice: "zh-HK-HiuMaanNeural" # 廣東話女聲（擇一）
+    voice: "zh-HK-HiuMaanNeural"   # 廣東話女聲（預設）
+    # voice: "zh-HK-WanLungNeural" # 廣東話男聲（擇一）
 ```
 
 **Step C: 如果用 Groq Whisper（更快更準，雲端）**
@@ -1464,7 +1464,7 @@ WEIXIN_DM_POLICY=open
 | Dashboard 淨係睇到一個 agent | Dashboard 預設跟 volume mount 嘅 data dir。多個 agent 要用 Desktop app 嘅 Connections 功能 |
 | Container restart 之後 WhatsApp 斷咗 | 正常——Baileys session 可能要重連。`docker logs` 睇有冇 reconnection error，必要時重新掃 QR |
 | 語音訊息聽唔到（STT 唔 work） | 確認 `faster-whisper` 已裝：`docker exec hermes pip install faster-whisper`。第一次用會 download model（~150MB） |
-| TTS 講嘢唔係廣東話 | 檢查 `config.yaml` 嘅 `tts.edge.voice` 有冇設 `zh-HK-WanLungNeural` |
+| TTS 講嘢唔係廣東話 | 檢查 `config.yaml` 嘅 `tts.edge.voice` 有冇設 `zh-HK-HiuMaanNeural` |
 | STT 轉錄出嚟係普通話文字 | 正常——Whisper 將粵語歸類為 `zh`，會轉做普通話書面文字。Agent 仍然會用廣東話回覆 |
 | 語音訊息太長被截斷 | 調高 `voice.max_recording_seconds`（預設 120 秒） |
 | Edge TTS 講嘢好機械 | 可以試 ElevenLabs（付費但自然得多），設定 `tts.provider: elevenlabs` |
