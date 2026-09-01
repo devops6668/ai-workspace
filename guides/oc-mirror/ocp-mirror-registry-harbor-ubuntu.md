@@ -683,26 +683,92 @@ oc-mirror \
 # 然後 apply 新生成嘅 YAML
 ```
 
-### 10.2 更新 OCP Version
+### 10.2 升級 OCP 版本（例如 4.20.27 → 4.20.34）
+
+升級分兩部分：Mirror 新版本 images + Cluster Upgrade。
+
+#### Step 1: 改 mirror config 加入新版本
 
 ```yaml
-# 改 mirror-config.yaml
+# mirror-config.yaml
 mirror:
   platform:
     channels:
       - name: stable-4.20
-        minVersion: 4.20.28  # 改新版本
-        maxVersion: 4.20.28
+        minVersion: 4.20.27
+        maxVersion: 4.20.34    # ← 改新版本
+  operators:
+    # ... operators 保持唔變
 ```
 
+> **提示：** minVersion 可以保持舊版本，oc-mirror 會 incremental 只 download 增量 images。
+
+#### Step 2: 重新跑 oc-mirror
+
 ```bash
-# 重新 mirror
+cd /root/ocp-mirror
+
 oc-mirror \
-  -c mirror-config.yaml \
-  --workspace file:///opt/mirror/workspace \
-  docker://<HARBOR_IP>/ocp-mirror \
+  -c ocp-4_20_27-mirror.yaml \
+  --workspace file:///root/ocp-mirror/workspace \
+  docker://harbor.devops.local/ocp-mirror \
+  --image-timeout 30m \
   --v2
 ```
+
+> **時間估算：** incremental download 約 15-30 分鐘（只 download 4.20.28 ~ 4.20.34 嘅 images）。
+
+#### Step 3: Apply 新嘅 IDMS/ITMS 到 OCP
+
+```bash
+# 新生成嘅 YAML 會喺 workspace/cluster-resources/
+oc apply -f workspace/cluster-resources/imageDigestMirrorSet.yaml
+oc apply -f workspace/cluster-resources/imageTagMirrorSet.yaml
+
+# 等 MCP rollout
+oc get mcp
+# 當所有 Updated=True 先至繼續
+```
+
+#### Step 4: Cluster Upgrade
+
+```bash
+# 查看可用升級
+oc adm upgrade
+
+# 查看你 mirror 嘅版本
+oc get clusterversion
+oc get clusterversion -o jsonpath='{.items[0].status.availableUpdates}'
+
+# 鎖定到指定版本
+oc adm upgrade --to=4.20.34
+
+# 觀察 upgrade 進度
+oc get clusteroperators
+oc get mcp
+oc get nodes
+```
+
+#### Step 5: 驗證
+
+```bash
+# 確認版本
+oc get clusterversion -o jsonpath='{.items[0].status.desired.version}'
+
+# 確認所有 operator 正常
+oc get clusteroperators | grep -v True
+# 應該冇 output（全部 True）
+
+# 確認 MCP 全部 Updated
+oc get mcp
+
+# 確認 nodes 版本
+oc get nodes -o wide
+```
+
+> **時間估算：** Cluster upgrade 約 30-60 分鐘（逐個 node rollout）。
+
+> **注意：** 升級前建議先備份 etcd（Section 10.3 有 Harbor 備份，etcd 備份請參考官方文件）。
 
 ### 10.3 Harbor 備份
 
