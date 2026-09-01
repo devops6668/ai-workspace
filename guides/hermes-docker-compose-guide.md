@@ -917,7 +917,143 @@ services:
 
 ---
 
-### 16.3 Step-by-Step：建立第一個 Agent
+### 16.3 語音設定（聽 + 講廣東話）
+
+每個 agent 要裝 STT（聽）同 TTS（講）先可以處理語音訊息。
+
+#### 語音架構
+
+```
+用戶發語音訊息 (WhatsApp/WeChat)
+        ↓
+  STT 轉錄（聽）
+  faster-whisper (本地免費) / Groq Whisper (雲端)
+        ↓
+  Agent 處理（LLM）
+        ↓
+  TTS 合成（講）
+  Edge TTS zh-HK (免費) / ElevenLabs (付費)
+        ↓
+  回覆語音訊息
+```
+
+#### Cantonese 支援一覽
+
+| 功能 | 方案 | 語言 | 費用 |
+|------|------|------|------|
+| **TTS（講廣東話）** | Edge TTS `zh-HK-WanLungNeural` | 粵語 | 免費 |
+| **TTS（講廣東話）** | Edge TTS `zh-HK-HiuMaanNeural`（女聲） | 粵語 | 免費 |
+| **STT（聽廣東話）** | faster-whisper local | 自動偵測（會轉做普通話文字） | 免費 |
+| **STT（聽廣東話）** | Groq Whisper cloud | 自動偵測 | 免費 tier |
+
+> ⚠️ **STT 限制**：faster-whisper 會將廣東話語音轉錄成**普通話書面文字**（例如「你食咗飯未」會變「你吃飯了嗎」）。呢個係 Whisper 嘅設計限制——佢將粵語歸類為 `zh`。如果需要保留廣東話文字，需要用其他 ASR 引擎（如 FunASR SenseVoice），但 Hermes 未內建支援。
+>
+> **實際影響**：Agent 聽得明你講咩，但 transcript 會係普通話文字。Agent 仍然會用廣東話回覆（因為 SOUL.md 指定咗）。
+
+#### Edge TTS 廣東話 Voice 選擇
+
+| Voice ID | 性別 | 風格 |
+|----------|------|------|
+| `zh-HK-WanLungNeural` | 男聲 | 友善、正面（推薦） |
+| `zh-HK-HiuMaanNeural` | 女聲 | 友善、正面 |
+| `zh-HK-HiuGaaiNeural` | 女聲 | 友善、正面 |
+
+#### 設定步驟
+
+**Step A: 裝 faster-whisper（STT，免費本地）**
+
+```bash
+# 喺 container 入面裝
+docker exec hermes-agent-a pip install faster-whisper
+```
+
+或者喺 Dockerfile 裝（永久生效）：
+
+```dockerfile
+FROM nousresearch/hermes-agent:latest
+USER root
+RUN pip install faster-whisper
+```
+
+**Step B: 設定 config.yaml（STT + TTS）**
+
+```yaml
+# ~/.hermes-agent-a/config.yaml
+
+# STT（聽語音）
+stt:
+  enabled: true
+  provider: "local"           # 本地，免費
+  local:
+    model: "base"             # tiny / base / small / medium / large-v3
+    # language: "zh"          # 可選：強制中文（但會影響英文辨識）
+    # 留空 = 自動偵測語言
+
+# TTS（講廣東話）
+tts:
+  provider: "edge"            # Edge TTS，免費
+  edge:
+    voice: "zh-HK-WanLungNeural"   # 廣東話男聲
+    # voice: "zh-HK-HiuMaanNeural" # 廣東話女聲（擇一）
+```
+
+**Step C: 如果用 Groq Whisper（更快更準，雲端）**
+
+```yaml
+stt:
+  enabled: true
+  provider: "groq"
+  groq:
+    language: ""              # 自動偵測
+```
+
+`.env` 加：
+```bash
+GROQ_API_KEY=your-groq-key   # 免費 tier 夠用
+```
+
+**Step D: 完整 .env（語音 + WhatsApp + WeChat）**
+
+```bash
+# ~/.hermes-agent-a/.env
+
+# LLM
+OPENROUTER_API_KEY=sk-or-xxxxx
+
+# WhatsApp
+WHATSAPP_ENABLED=true
+WHATSAPP_MODE=bot
+WHATSAPP_ALLOWED_USERS=853XXXXXXXX
+
+# WeChat
+WEIXIN_ACCOUNT_ID=agent-a-account-id
+WEIXIN_DM_POLICY=open
+
+# STT（如果用 Groq）
+GROQ_API_KEY=gsk_xxxxx
+
+# STT fallback（可選，OpenAI Whisper）
+# VOICE_TOOLS_OPENAI_KEY=sk-xxxxx
+
+# TTS（Edge TTS 免費，唔需要 key）
+```
+
+**Step E: SOUL.md 加語音指令**
+
+喺 SOUL.md 加多一段，確保 agent 明白收到語音訊息時點處理：
+
+```markdown
+# 語音處理
+
+- 當你收到語音訊息嘅轉錄文字時，正常回覆就得
+- 你嘅回覆會自動被 TTS 轉成語音（廣東話）
+- 語音轉錄可能有少少誤差（特別係廣東話轉普通話文字），盡量理解用戶嘅意思
+- 如果唔確定用戶講咩，直接問返「你係咪話 XXX？」
+```
+
+---
+
+### 16.4 Step-by-Step：建立第一個 Agent
 
 #### Step 1: 建 data directory + 首次 setup
 
@@ -1114,7 +1250,7 @@ docker exec hermes-agent-b hermes doctor
 
 ---
 
-### 16.4 第二個 Agent（Agent B）重複 Step 1-5
+### 16.5 建立 Agent B（重複 Step 1-4）
 
 只需要改 directory 同名字：
 
@@ -1159,7 +1295,7 @@ EOF
 
 ---
 
-### 16.5 SOUL.md 廣東話範例合集
+### 16.6 SOUL.md 廣東話範例合集
 
 #### 範例 A：DevOps 工程師
 
@@ -1195,18 +1331,34 @@ EOF
 
 ---
 
-### 16.6 完整 docker-compose.yml（多 Agent + Dashboard）
+### 16.7 完整 docker-compose.yml（多 Agent + Dashboard + 語音）
+
+#### 先建立 Dockerfile（加裝 faster-whisper）
+
+```dockerfile
+# Dockerfile.heroku-agent-voice
+FROM nousresearch/hermes-agent:latest
+USER root
+RUN pip install --no-cache-dir faster-whisper && \
+    rm -rf /root/.cache/pip
+```
+
+#### docker-compose.yml
 
 ```yaml
-# docker-compose.yml — Multi-Agent WhatsApp + WeChat + Cantonese
+# docker-compose.yml — Multi-Agent WhatsApp + WeChat + Cantonese Voice
 #
 # 使用方法：
-#   1. 先為每個 agent 跑 setup + whatsapp + weixin（interactive QR scan）
-#   2. HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
+#   1. 先建好 Dockerfile.heroku-agent-voice
+#   2. 為每個 agent 跑 setup + whatsapp + weixin（interactive QR scan）
+#   3. HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
 #
 services:
   agent-a:
-    image: nousresearch/hermes-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.heroku-agent-voice
+    image: hermes-agent-voice
     container_name: hermes-agent-a
     restart: unless-stopped
     command: ["gateway", "run"]
@@ -1223,7 +1375,7 @@ services:
           cpus: "2.0"
 
   agent-b:
-    image: nousresearch/hermes-agent:latest
+    image: hermes-agent-voice
     container_name: hermes-agent-b
     restart: unless-stopped
     command: ["gateway", "run"]
@@ -1240,7 +1392,7 @@ services:
           cpus: "2.0"
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: hermes-agent-voice
     container_name: hermes-dashboard
     restart: unless-stopped
     network_mode: host
@@ -1255,9 +1407,12 @@ services:
     command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
 ```
 
+> **語音訊息流程**：WhatsApp/WeChat 語音 → STT 轉錄 → Agent 處理 → TTS 合成 → 回覆語音
+> 呢個 flow 唔需要 PulseAudio/microphone（嗰個只係 CLI voice mode 先用）。
+
 ---
 
-### 16.7 各 Agent 嘅 .env 範例
+### 16.8 各 Agent 嘅 .env 範例
 
 #### Agent A (.env)
 
@@ -1297,7 +1452,7 @@ WEIXIN_DM_POLICY=open
 
 ---
 
-### 16.8 常見問題
+### 16.9 常見問題
 
 | 問題 | 解決方法 |
 |------|----------|
@@ -1308,6 +1463,11 @@ WEIXIN_DM_POLICY=open
 | Agent 回覆太慢 | 檢查 model 速度。可以用 `delegation.model` 指定快嘅 model 做 subtask |
 | Dashboard 淨係睇到一個 agent | Dashboard 預設跟 volume mount 嘅 data dir。多個 agent 要用 Desktop app 嘅 Connections 功能 |
 | Container restart 之後 WhatsApp 斷咗 | 正常——Baileys session 可能要重連。`docker logs` 睇有冇 reconnection error，必要時重新掃 QR |
+| 語音訊息聽唔到（STT 唔 work） | 確認 `faster-whisper` 已裝：`docker exec hermes pip install faster-whisper`。第一次用會 download model（~150MB） |
+| TTS 講嘢唔係廣東話 | 檢查 `config.yaml` 嘅 `tts.edge.voice` 有冇設 `zh-HK-WanLungNeural` |
+| STT 轉錄出嚟係普通話文字 | 正常——Whisper 將粵語歸類為 `zh`，會轉做普通話書面文字。Agent 仍然會用廣東話回覆 |
+| 語音訊息太長被截斷 | 調高 `voice.max_recording_seconds`（預設 120 秒） |
+| Edge TTS 講嘢好機械 | 可以試 ElevenLabs（付費但自然得多），設定 `tts.provider: elevenlabs` |
 
 ---
 
