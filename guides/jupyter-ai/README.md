@@ -215,14 +215,39 @@ helm upgrade --install jupyterhub jupyterhub/jupyterhub \
 
 Jupyternaut 使用 LiteLLM 連接 OpenAI-compatible API。配置方式：
 
-#### 方法 1: AI Settings UI (推薦)
+#### 方法 1: .env 檔案（推薦）
+
+喺 workspace root 建立 `.env` 檔案：
+
+```bash
+cat > /home/jovyan/.env << 'EOF'
+OPENAI_API_BASE=https://apihub.agnes-ai.com/v1
+OPENAI_API_KEY=sk-your-key
+EOF
+```
+
+或者喺 JupyterLab UI：
+1. 去 **AI Settings > Secrets and API keys**
+2. 點 **Add secret**
+3. 加 `OPENAI_API_KEY` 同 `OPENAI_API_BASE`
+
+> **注意**: `.env` 係畀 AI persona (Jupyternaut) 用。
+> JupyterLab 本身都需要環境變數，建議喺 Helm values 同時 set：
+> ```yaml
+> singleuser:
+>   extraEnv:
+>     OPENAI_API_BASE: "https://apihub.agnes-ai.com/v1"
+>     OPENAI_API_KEY: "sk-your-key"
+> ```
+
+#### 方法 2: AI Settings UI
 
 1. 開 JupyterLab
 2. 去 **Settings > AI Settings**
 3. 揀 **Chat Model** → 選擇 `openai/agnes-2.0-flash` (或其他 model)
 4. 設定 API Key (如需要)
 
-#### 方法 2: 直接改 config file
+#### 方法 3: 直接改 config file
 
 ```bash
 # 進入 user pod
@@ -242,6 +267,9 @@ cat > /home/jovyan/.local/share/jupyter/jupyter_ai/config.json << 'EOF'
 }
 EOF
 ```
+
+> **注意**: `config.json` 冇 `api_base` 欄位。API base URL 必須透過
+> 環境變數 `OPENAI_API_BASE` 或 `.env` 檔案設定。
 
 #### Model ID 格式
 

@@ -1,0 +1,43 @@
+# =============================================================================
+# Jupyter AI v3.x on datascience-notebook
+# Base: quay.io/jupyter/datascience-notebook:latest
+# =============================================================================
+
+FROM quay.io/jupyter/datascience-notebook:latest
+
+LABEL maintainer="Paul Wong"
+LABEL description="datascience-notebook + jupyter-ai v3.x + LiteLLM"
+
+# =============================================================================
+# 1. System Dependencies (Node.js for ACP agents)
+# =============================================================================
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# 2. Install jupyter-ai v3.x
+# =============================================================================
+USER ${NB_UID}
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+    "jupyter-ai>=3.1.0" \
+    litellm>=1.0.0
+
+# =============================================================================
+# 3. Environment Variables
+# =============================================================================
+ENV OPENAI_API_BASE="" \
+    OPENAI_API_KEY=""
+
+# =============================================================================
+# 4. Health Check
+# =============================================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8888/api || exit 1
