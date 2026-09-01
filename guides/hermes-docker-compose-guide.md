@@ -679,13 +679,32 @@ delegation:
 
 ---
 
-### 15.3 完整 Multi-Agent Docker Compose 範例
+### 15.3 獨立 Data Directory（唔攪亂現有 agent）
+
+如果你已經有一個 `~/.hermes/` 喺跑緊，最安全嘅做法係用**獨立嘅 data folder**：
+
+```bash
+# 建一個全新嘅 data directory
+mkdir -p ~/.hermes-worker1
+
+# 首次設定呢個 worker
+docker run -it --rm \
+  -v ~/.hermes-worker1:/opt/data \
+  nousresearch/hermes-agent:latest setup
+```
+
+咁呢個 worker 有自己嘅 `config.yaml`、`.env`、sessions、skills、memories——同你原本嘅 `~/.hermes/` 完全隔離，互不干擾。
+
+---
+
+### 15.4 完整 Multi-Agent Docker Compose 範例
+
+#### 方案 A：共用 Data Directory（s6 管理多個 Bots）
+
+同一個 container 入面用 profile 分 Bots，全部喺 `~/.hermes/`：
 
 ```yaml
-# docker-compose.yml — Multi-Agent Hermes
-#
-# 一個 container 跑多個 Bots（s6 managed）+ delegate_task 並行工作
-#
+# docker-compose.yml — Multi-Agent Hermes（共用 data dir）
 services:
   hermes:
     image: nousresearch/hermes-agent:latest
@@ -721,72 +740,136 @@ services:
 ```
 
 啟動後建立 Bots：
-
 ```bash
-# 建立多個 specialist bots
 docker exec hermes hermes profile create coder
 docker exec hermes hermes profile create researcher
-docker exec hermes hermes profile create ops
-
-# 每個 bot 設定唔同 model
-# coder → deepseek, researcher → gemini, ops → 本地 ollama
-
-# 喺 Dashboard 或者 Telegram group 入面 @mention 們
-# Bot 會自己傾偈、分工合作
 ```
 
----
+#### 方案 B：獨立 Data Directory（完全隔離，推薦唔想攪亂現有 agent）
 
-### 15.4 多 Container 完全隔離方案
-
-如果需要**獨立資源限制**或者**獨立 image 版本**：
+每個 worker 有自己嘅 `~/.hermes-workerN/`，完全獨立：
 
 ```yaml
+# docker-compose.yml — Multi-Agent Hermes（獨立 data dirs）
+#
+# 每個 service 用唔同嘅 data folder
+# 互不干擾，可以 independently 升級、備份、刪
+#
 services:
-  hermes-main:
+  # 你原本嘅 agent（唔動佢）
+  hermes:
     image: nousresearch/hermes-agent:latest
-    container_name: hermes-main
+    container_name: hermes
     restart: unless-stopped
     command: ["gateway", "run"]
     network_mode: host
     volumes:
-      - ~/.hermes-main:/opt/data
-    deploy:
-      resources:
-        limits:
-          memory: 4G
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_DASHBOARD=1
 
-  hermes-coder:
+  # Worker 1：專做 coding
+  hermes-worker1:
     image: nousresearch/hermes-agent:latest
-    container_name: hermes-coder
+    container_name: hermes-worker1
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
       - "8643:8642"
     volumes:
-      - ~/.hermes-coder:/opt/data
+      - ~/.hermes-worker1:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
     deploy:
       resources:
         limits:
           memory: 2G
 
-  hermes-researcher:
+  # Worker 2：專做 research
+  hermes-worker2:
     image: nousresearch/hermes-agent:latest
-    container_name: hermes-researcher
+    container_name: hermes-worker2
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
       - "8644:8642"
     volumes:
-      - ~/.hermes-researcher:/opt/data
+      - ~/.hermes-worker2:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
     deploy:
       resources:
         limits:
           memory: 2G
+
+  # Dashboard（共用，可以睇所有 worker）
+  dashboard:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - hermes
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
 ```
 
-> ⚠️ 唯一要注意：每個 container 嘅 API_SERVER_PORT 唔可以重複。
-> `network_mode: host` 嘅話直接用唔同 port；bridge 嘅話要 mapping 唔同 host port。
+首次設定每個 worker：
+```bash
+docker run -it --rm -v ~/.hermes-worker1:/opt/data nousresearch/hermes-agent:latest setup
+docker run -it --rm -v ~/.hermes-worker2:/opt/data nousresearch/hermes-agent:latest setup
+```
+
+#### 兩個方案比較
+
+| | 方案 A（共用 data dir） | 方案 B（獨立 data dirs） |
+|---|---|---|
+| 隔離程度 | Profile 級別（config/memory/sessions 分開） | Container 級別（完全獨立） |
+| 資源隔離 | 共用 container 嘅 memory/CPU limit | 每個 worker 獨立 limit |
+| 備份 | 一個 `~/.hermes/` 搞掂 | 每個 worker 獨立備份 |
+| 升級 | 一個 `docker compose pull` 搞掂 | 同左 |
+| 適合場景 | 同一個人嘅多個 specialist bots | 不同用途 / 不同人 / 需要隔離 |
+| **唔攪亂現有 agent** | ✅ profile 自己建自己嘅 | ✅✅ 完全唔掂現有 `~/.hermes/` |
+
+> ⚠️ 唔好用 `network_mode: host` 同時跑多個 gateway，port 會撞。
+> 用 port mapping 分開，或者只有一個用 host mode。
+
+---
+
+### 15.5 多 Container 完全隔離方案（進階）
+
+如果需要**獨立 image 版本**（例如一個跑 latest、一個跑 stable）：
+
+```yaml
+services:
+  hermes-stable:
+    image: nousresearch/hermes-agent:1.0.0    # pin 版本
+    container_name: hermes-stable
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    ports:
+      - "8642:8642"
+    volumes:
+      - ~/.hermes-stable:/opt/data
+
+  hermes-latest:
+    image: nousresearch/hermes-agent:latest    # 跟 latest
+    container_name: hermes-latest
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    ports:
+      - "8643:8642"
+    volumes:
+      - ~/.hermes-latest:/opt/data
+```
 
 ---
 
