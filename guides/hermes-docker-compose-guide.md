@@ -1053,200 +1053,87 @@ GROQ_API_KEY=gsk_xxxxx
 
 ---
 
-### 16.4 Step-by-Step：建立第一個 Agent
+### 16.4 Step-by-Step：用 Docker Compose 管理一切
 
-#### Step 1: 建 data directory + 首次 setup
+全部操作都用 `docker compose`，唔需要額外 `docker run`。
+
+#### Step 1: 建 data directory
 
 ```bash
 mkdir -p ~/.hermes-agent-a
-
-# Setup wizard（會問你 model、API key 等）
-docker run -it --rm \
-  -v ~/.hermes-agent-a:/opt/data \
-  nousresearch/hermes-agent:latest setup
 ```
 
-#### Step 2: 設定 SOUL.md（角色 + 廣東話）
-
-SOUL.md 係 agent 嘅靈魂——定義佢係邊個、講咩語言、有咩性格。
+#### Step 2: 首次 Setup（interactive）
 
 ```bash
-# 建立 SOUL.md
-cat > ~/.hermes-agent-a/SOUL.md << 'EOF'
-# 身份
+# 建好 docker-compose.yml 之後（見 Section 16.7）
+cd /path/to/your/compose/dir
 
-你係一個專業嘅 DevOps 工程師 agent。你嘅名叫做「阿 Dev」。
-
-# 語言
-
-- 所有回覆都用**繁體中文 / 廣東話**
-- 語氣自然、直接，好似同事傾偈咁
-- 技術術語可以用英文（container、deploy、rollback 等），但解釋用廣東話
-- 唔好用書面語，要口語化
-
-# 性格
-
-- 實幹派，唔講廢話
-- 有問題直接講，唔會遮遮掩掩
-- 做嘢有條理，會一步步解釋
-- 遇到唔確定嘅嘢會講「呢個我要再查下」
-
-# 職責
-
-- 處理 DevOps 相關問題：K8s、Docker、CI/CD、monitoring
-- 幫手 debug server 問題
-- Review infrastructure code
-- 執行 deployment 操作
-
-# 邊啲唔做
-
-- 唔會答非技術問題
-- 唔會幫手寫非英文嘅文章
-EOF
+# 首次設定（model、API key）
+docker compose run --rm agent-a setup
 ```
 
-#### Step 3: 設定 WhatsApp
+#### Step 3: 掃 WhatsApp QR
 
 ```bash
-# 跑 WhatsApp setup wizard（會出 QR code，用手機掃）
-docker run -it --rm \
-  -v ~/.hermes-agent-a:/opt/data \
-  nousresearch/hermes-agent:latest whatsapp
+docker compose run --rm agent-a whatsapp
 ```
 
-掃完 QR code 之後，session 會存喺 `~/.hermes-agent-a/platforms/whatsapp/session/`。
+terminal 會出 QR code，用手機 WhatsApp 掃。完成後 session 自動存入 `~/.hermes-agent-a/platforms/whatsapp/session/`。
 
-然後設定 `.env`：
+#### Step 4: 掃 WeChat QR
 
 ```bash
-cat >> ~/.hermes-agent-a/.env << 'EOF'
-
-# WhatsApp
-WHATSAPP_ENABLED=true
-WHATSAPP_MODE=bot
-WHATSAPP_ALLOWED_USERS=853XXXXXXXX   # 允許邊個號碼 DM（你嘅號碼）
-# WHATSAPP_ALLOWED_USERS=*            # 或者全部人都得
-EOF
+docker compose run --rm agent-a gateway setup
+# 選擇 Weixin，跟指示掃 QR
 ```
 
-#### Step 4: 設定 WeChat（微信）
+credentials 自動存入 `~/.hermes-agent-a/weixin/accounts/`。
+
+#### Step 5: 寫 SOUL.md + config.yaml + .env
+
+（見下方各 Section）
+
+#### Step 6: 正式啟動
 
 ```bash
-# 跑 Weixin setup wizard（會出 QR code，用微信掃）
-docker run -it --rm \
-  -v ~/.hermes-agent-a:/opt/data \
-  nousresearch/hermes-agent:latest gateway setup
-# 揀 Weixin，跟指示掃 QR
+docker compose up -d
 ```
 
-credentials 會存喺 `~/.hermes-agent-a/weixin/accounts/`。
+搞掂！之後所有操作都係 `docker compose` 命令。
 
-然後設定 `.env`：
+#### 之後嘅日常操作
 
 ```bash
-cat >> ~/.hermes-agent-a/.env << 'EOF'
+# 啟動所有 agent
+docker compose up -d
 
-# WeChat (微信)
-WEIXIN_ACCOUNT_ID=你嘅-account-id
-WEIXIN_DM_POLICY=open
-# WEIXIN_ALLOWED_USERS=user_id_1    # 如果想限制邊個可以 DM
-EOF
+# 停止所有
+docker compose down
+
+# 重啟
+docker compose restart
+
+# 睇 log（所有 agent）
+docker compose logs -f
+
+# 睇特定 agent log
+docker compose logs -f agent-a
+
+# 重新掃 WhatsApp QR（斷線時）
+docker compose run --rm agent-a whatsapp
+
+# 重新掃 WeChat QR（斷線時）
+docker compose run --rm agent-a gateway setup
+
+# 裝新 skills
+docker compose run --rm agent-a hermes skills install xxx
+
+# 跑 doctor 檢查
+docker compose run --rm agent-a hermes doctor
 ```
 
-#### Step 5: 設定 config.yaml
-
-```bash
-cat > ~/.hermes-agent-a/config.yaml << 'EOF'
-model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
-  # 或者用本地 model:
-  # provider: custom
-  # model: qwen2.5-coder
-  # base_url: http://host.docker.internal:11434
-  # api_key: "none"
-
-# WhatsApp 設定
-whatsapp:
-  send_read_receipts: false
-  reply_prefix: ""
-
-# WeChat 設定
-platforms:
-  weixin:
-    extra:
-      dm_policy: open
-      group_policy: disabled
-
-# Delegation（如果要開 subagent）
-delegation:
-  max_concurrent_children: 3
-  max_iterations: 50
-EOF
-```
-
-#### Step 6: Docker Compose
-
-```yaml
-# docker-compose.yml
-services:
-  agent-a:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-agent-a
-    restart: unless-stopped
-    command: ["gateway", "run"]
-    network_mode: host
-    volumes:
-      - ~/.hermes-agent-a:/opt/data
-    environment:
-      - HERMES_UID=${HERMES_UID:-1000}
-      - HERMES_GID=${HERMES_GID:-1000}
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-          cpus: "2.0"
-
-  agent-b:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-agent-b
-    restart: unless-stopped
-    command: ["gateway", "run"]
-    network_mode: host
-    volumes:
-      - ~/.hermes-agent-b:/opt/data
-    environment:
-      - HERMES_UID=${HERMES_UID:-1000}
-      - HERMES_GID=${HERMES_GID:-1000}
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-          cpus: "2.0"
-```
-
-> 用 `network_mode: host` 嘅話，每個 agent 嘅 WhatsApp/WeChat session 會自己管理 port，唔會撞。
-> 如果唔用 host mode，每個 agent 要用獨立 port + bridge network。
-
-#### Step 7: 啟動
-
-```bash
-HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
-```
-
-#### Step 8: 驗證
-
-```bash
-# 睇兩個 agent 嘅 log
-docker logs --tail 20 hermes-agent-a
-docker logs --tail 20 hermes-agent-b
-
-# 測試 WhatsApp 連接
-docker exec hermes-agent-a hermes doctor
-
-# 測試 WeChat 連接
-docker exec hermes-agent-b hermes doctor
-```
+> **重點**：`docker compose run --rm` = 一次性互動操作（setup、掃 QR），`docker compose up -d` = 長期跑 gateway。
 
 ---
 
