@@ -10,7 +10,7 @@ nbconvert>=7.0
 ipykernel>=6.0
 
 # jupyter-ai v3.x
-jupyter-ai[jupyternaut]>=3.0.0
+jupyter-ai>=3.1.0
 litellm>=1.0.0
 
 # Data Manipulation

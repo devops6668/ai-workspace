@@ -34,13 +34,15 @@ Jupyter AI v3.x 係 JupyterLab 嘅 agentic AI 擴展，提供：
 
 | 組件 | 用途 | 來源 |
 |------|------|------|
-| `jupyter-ai` | 主套件 (metapackage) | PyPI |
-| `jupyterlab-chat` | Chat UI 框架 | PyPI |
-| `jupyter-ai-persona-manager` | Persona 管理 | jupyter-ai-contrib |
+| `jupyter-ai` | 主套件 (metapackage, prebuilt extension) | PyPI |
+| `jupyterlab-chat` | Chat UI 框架 (>=0.25.0) | PyPI |
+| `jupyter-ai-persona-manager` | Persona 管理 (>=0.2.0) | jupyter-ai-contrib |
 | `jupyter-ai-litellm` | LiteLLM 模型抽象 | jupyter-ai-contrib |
-| `jupyter-ai-acp-client` | ACP agent 客戶端 | jupyter-ai-contrib |
-| `jupyter-server-mcp` | MCP server 整合 | jupyter-ai-contrib |
+| `jupyter-ai-acp-client` | ACP agent 客戶端 (>=0.3.0) | jupyter-ai-contrib |
+| `jupyter-server-mcp` | MCP server 整合 (>=0.3.0) | jupyter-ai-contrib |
 | `jupyter-ai-jupyternaut` | 預設 persona | jupyter-ai-contrib |
+| `jupyter-ai-tools` | AI 工具整合 (>=0.7.0) | jupyter-ai-contrib |
+| `jupyter-live-content` | Live content 支援 (>=0.1.1) | jupyter-ai-contrib |
 
 ---
 
@@ -90,38 +92,49 @@ v3.x 係模組化架構，唔再係 monorepo。核心代碼分散喺 `jupyter-ai
 ### 本地安裝 (pip)
 
 ```bash
-# 安裝 jupyter-ai 主套件
+# 安裝 jupyter-ai (prebuilt extension，pip install 即自動 enable)
 pip install jupyter-ai
 
-# 安裝 Jupyternaut persona (預設)
-pip install jupyter-ai[jupyternaut]
+# 或用 uv
+uv pip install jupyter-ai
 
-# 或安裝 magic commands (舊版兼容)
-pip install jupyter-ai[magics]
+# 或用 conda
+conda install -c conda-forge jupyter-ai
 
-# 驗證安裝
-jupyter server extension list
-# 應該看到 jupyter_ai, jupyter_ai_litellm, jupyter_ai_jupyternaut 等
+# 安裝完成後直接啟動 JupyterLab
+jupyter lab
+# Chat icon 會自動出現喺 launcher 同 sidebar
 ```
+
+> **注意**: v3.x 係 prebuilt extension，唔需要手動執行
+> `jupyter server extension enable`。pip install 之後自動生效。
 
 ### 安裝 Agents (可選)
 
-jupyter-ai v3.x 唔內建 agent，需另外安裝：
+jupyter-ai v3.x 唔內建 agent，需另外安裝。每個 agent 有自己嘅安裝方式：
 
 ```bash
-# Claude Code
+# Claude Code (需要 npm)
 npm install -g @agentclientprotocol/claude-agent-acp
 
-# Codex CLI
-npm install -g @agentclientprotocol/codex-acp
+# Codex CLI (需要 npm)
+npm install -g @zed-industries/codex-acp
 
-# Mistral Vibe
-pip install mistral-vibe
-# 或
+# Mistral Vibe (需要 pip/uv)
 uv tool install mistral-vibe
+# 或
+pip install mistral-vibe
 
-# 其他 agents 參考官方文檔
+# 其他 agents:
+# - GitHub Copilot CLI: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
+# - Goose: https://block.github.io/goose/docs/getting-started/installation
+# - Kilo CLI: https://kilo.ai/cli
+# - Kiro CLI: https://kiro.dev/docs/cli/installation/
+# - OpenCode: https://opencode.ai/docs/#install
 ```
+
+> **提示**: Agents 安裝後會自動被 Jupyter AI 偵測到。
+> 部分 agent 需要喺 terminal 入面 login（例如 `claude auth login`）。
 
 ---
 
@@ -293,12 +306,12 @@ Agent 執行危險操作前會要求批准：
 |-------|------|---------|
 | Jupyternaut | LiteLLM | `pip install jupyter-ai[jupyternaut]` |
 | Claude Code | ACP | `npm install -g @agentclientprotocol/claude-agent-acp` |
-| Codex CLI | ACP | `npm install -g @agentclientprotocol/codex-acp` |
+| Codex CLI | ACP | `npm install -g @zed-industries/codex-acp` |
 | GitHub Copilot CLI | ACP | 官方安裝 |
 | Goose | ACP | 官方安裝 |
 | Kilo CLI | ACP | 官方安裝 |
 | Kiro CLI | ACP | 官方安裝 |
-| Mistral Vibe | ACP | `pip install mistral-vibe` |
+| Mistral Vibe | ACP | `uv tool install mistral-vibe` |
 | OpenCode | ACP | 官方安裝 |
 
 ---
@@ -360,29 +373,54 @@ docker push harbor.devops.local/jupyter/jupyter-ai:latest
 ### Dockerfile 範例 (v3.x)
 
 ```dockerfile
-FROM quay.io/jupyterhub/k8s-hub:4.1.0
+FROM python:3.12-slim
 
 LABEL maintainer="Paul Wong"
-LABEL description="JupyterHub with jupyter-ai v3.x"
+LABEL description="JupyterHub single-user image with jupyter-ai v3.x"
 
 USER root
 
 # 安裝系統依賴
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git build-essential \
+    curl git build-essential libpq-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# 安裝 jupyter-ai + Jupyternaut
-RUN pip install --no-cache-dir \
-    jupyter-ai[jupyternaut] \
-    litellm
 
 # 安裝 Node.js (for ACP agents)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-USER ${NB_UID}
+# 建立 non-root user
+RUN useradd -m -s /bin/bash jovyan \
+    && mkdir -p /home/jovyan/.jupyter \
+    && chown -R jovyan:jovyan /home/jovyan
+
+# 安裝 jupyter-ai (prebuilt extension，pip install 即自動 enable)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir \
+    jupyterlab>=4.0 \
+    "jupyter-ai>=3.1.0" \
+    litellm>=1.0.0
+
+# Data Science (可選)
+RUN pip install --no-cache-dir \
+    pandas numpy scipy scikit-learn \
+    matplotlib seaborn plotly \
+    pyarrow openpyxl requests httpx pydantic
+
+# 環境變數
+ENV HOME=/home/jovyan \
+    NB_USER=jovyan \
+    NB_UID=1000 \
+    JUPYTER_ENABLE_LAB=yes \
+    OPENAI_API_BASE="" \
+    OPENAI_API_KEY=""
+
+USER jovyan
+WORKDIR /home/jovyan
+
+EXPOSE 8888
+CMD ["jupyter-lab", "--ip=0.0.0.0", "--port=8888", "--no-browser"]
 ```
 
 ---
@@ -512,16 +550,18 @@ helm upgrade jupyterhub jupyterhub/jupyterhub \
 
 ### Q4: JupyterLab 見唔到 Chat panel
 
-**原因**: jupyter-ai extension 未正確載入
+**原因**: jupyter-ai extension 未正確載入，或用緊 system Python 嘅 JupyterLab
 
 **解決**:
 ```bash
-# 檢查 extensions
-kubectl exec -n jupyterhub <pod-name> -- jupyter server extension list
+# 確認用緊 venv 嘅 jupyter-lab
+kubectl exec -n jupyterhub <pod-name> -- bash -c "source ~/.venv/jupyter-ai/bin/activate && jupyter server extension list"
 
-# 確認 jupyter_ai 已 enabled
-# 如果冇，手動 enable
-kubectl exec -n jupyterhub <pod-name> -- jupyter server extension enable jupyter_ai
+# 如果冇見到 jupyter-ai 相關 extensions，檢查 image 有冇正確 build
+kubectl exec -n jupyterhub <pod-name> -- pip list | grep jupyter-ai
+
+# 重啟 JupyterLab（用 venv 版本）
+kubectl exec -n jupyterhub <pod-name> -- bash -c "pkill -f jupyter-lab && source ~/.venv/jupyter-ai/bin/activate && jupyter-lab --ip=0.0.0.0 --port=8888 --no-browser &"
 ```
 
 ### Q5: Agent 冇回應
@@ -565,12 +605,12 @@ kubectl exec -n jupyterhub <pod-name> -- claude auth login
 
 ## 版本資訊
 
-- **指南版本**: 2.0
+- **指南版本**: 2.1
 - **建立日期**: 2026-07-21
-- **更新日期**: 2026-08-28
+- **更新日期**: 2026-09-01
 - **作者**: Paul Wong (via Hermes Agent)
-- **基於**: jupyter-ai v3.0.1, JupyterHub 4.2.0 (Helm chart), K3s
-- **更新**: 全面重寫 for v3.x 架構 (ACP + Chat UI + Jupyternaut)
+- **基於**: jupyter-ai v3.1.3, JupyterHub 4.2.0 (Helm chart), K3s
+- **更新**: v2.1 - 同步官方 repo，修正版本號、Agent 安裝方式、移除手動 extension enable
 
 ---
 

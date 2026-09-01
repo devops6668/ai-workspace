@@ -98,15 +98,14 @@ RUN pip install --no-cache-dir \
 # 4. jupyter-ai v3.x (with Jupyternaut persona)
 # =============================================================================
 RUN pip install --no-cache-dir \
-    "jupyter-ai[jupyternaut]" \
+    "jupyter-ai>=3.1.0" \
     litellm
 
 # =============================================================================
 # 5. JupyterLab Extension Enable
 # =============================================================================
-RUN jupyter server extension enable jupyter_ai --py 2>/dev/null || true
-RUN jupyter server extension enable jupyter_ai_litellm --py 2>/dev/null || true
-RUN jupyter server extension enable jupyter_ai_jupyternaut --py 2>/dev/null || true
+# v3.x 係 prebuilt extension，pip install 即自動 enable，唔需要手動 enable
+# 如果需要驗證，可以執行: jupyter server extension list
 
 # =============================================================================
 # 6. User Environment
