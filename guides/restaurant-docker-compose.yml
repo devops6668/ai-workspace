@@ -1,0 +1,40 @@
+# docker-compose.yml — Restaurant Takeaway Agent (阿姐)
+#
+# 使用方法：
+#   1. docker compose build
+#   2. docker compose run --rm restaurant setup
+#   3. docker compose run --rm restaurant whatsapp
+#   4. docker compose run --rm restaurant gateway setup  (揀 Weixin)
+#   5. docker compose up -d
+#
+services:
+  restaurant:
+    build:
+      context: .
+      dockerfile: Dockerfile.heroku-agent-voice
+    image: hermes-agent-voice
+    container_name: hermes-agent-restaurant
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    networks:
+      - net-restaurant
+    volumes:
+      - ./data:/opt/data
+    environment:
+      - HERMES_HOME=/opt/data
+    # --- 安全加固 ---
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run:exec,mode=755
+    security_opt:
+      - label:disable
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1"
+
+networks:
+  net-restaurant:
+    driver: bridge

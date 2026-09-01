@@ -1198,14 +1198,22 @@ docker compose run --rm agent-b setup
 
 #### WeChat 群組設定建議
 
-| 群組 | 成員 | 用途 |
-|------|------|------|
-| 「廚房出單群」 | 阿姐 + 廚師 | 轉發訂單俾廚師 |
-| 「外賣派單群」 | 阿姐 + 車手們 | 派單俾車手 |
-
-> Agent 可以加入 WeChat group，喺群組入面發訊息通知廚師同車手。
-> 但要注意：iLink Bot 嘅 group 支援有限（見 Section 16.9 常見問題）。
-> 如果 group 收唔到訊息，可以改用 DM 方式逐個通知。
+> ⚠️ **重要發現：iLink Bot 限制**
+>
+> QR login 建立嘅 iLink bot identity（`xxx@im.bot`）只係帳號自己嘅「自己同自己傾偈」功能。
+> **其他人搵唔到呢個 bot，冇辦法 DM。**
+>
+> 如果需要客人可以 DM bot 落單，必須用以下方案之一：
+>
+> | 方案 | 說明 | 適合做食店 bot？ |
+> |------|------|-----------------|
+> | **WeCom（企業微信）** | 開 WeCom bot，有獨立 bot ID，其他人可以搜到同 DM | ✅ 推薦 |
+> | **微信公眾號** | 開服務號/訂閱號，可以接收訊息 | ✅ 但申請較複雜 |
+> | **WhatsApp** | 一個號碼一個 bot，客人可以直接 DM | ✅ 適合 |
+>
+> 以下係 iLink bot 仍然可以做嘅用途：
+> - 做自己嘅個人助手（自己同自己傾偈）
+> - 喺群組入面做 bot（但 iLink 群組支援有限）
 
 ```bash
 cat > ~/.hermes-agent-b/SOUL.md << 'EOF'
@@ -1414,6 +1422,7 @@ WEIXIN_DM_POLICY=open
 | STT 轉錄出嚟係普通話文字 | 正常——Whisper 將粵語歸類為 `zh`，會轉做普通話書面文字。Agent 仍然會用廣東話回覆 |
 | 語音訊息太長被截斷 | 調高 `voice.max_recording_seconds`（預設 120 秒） |
 | Edge TTS 講嘢好機械 | 可以試 ElevenLabs（付費但自然得多），設定 `tts.provider: elevenlabs` |
+| WeChat iLink bot 搵唔到 / 收唔到 DM | iLink bot 只係帳號自己嘅「自己同自己傾偈」，其他人搵唔到。改用 WeCom 或 WhatsApp |
 
 ---
 

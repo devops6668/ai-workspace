@@ -1,0 +1,4 @@
+# Dockerfile.heroku-agent-voice
+FROM nousresearch/hermes-agent:latest
+USER root
+RUN uv pip install --python /opt/hermes/.venv/bin/python faster-whisper

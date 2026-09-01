@@ -1,0 +1,153 @@
+model:
+  provider: custom
+  base_url: https://token-plan-cn.xiaomimimo.com/v1
+  api_key: ${HERMES_CUSTOM_TOKEN_PLAN_CN_XIAOMIMIMO_COM_API_KEY}
+  default: mimo-v2.5
+toolsets:
+  - web
+  - memory
+  - vision
+agent:
+  max_turns: 150
+web:
+  backend: ddgs
+display:
+  tool_progress: all
+privacy:
+  redact_pii: true
+tts:
+  provider: edge
+  edge:
+    voice: zh-HK-HiuMaanNeural
+stt:
+  enabled: true
+  local:
+    model: base
+  provider: local
+whatsapp:
+  send_read_receipts: true
+  reply_prefix: ''
+approvals:
+  mode: smart
+security:
+  redact_secrets: true
+onboarding:
+  seen:
+    profile_build_offered: true
+_config_version: 39
+platforms:
+  weixin:
+    extra:
+      dm_policy: open
+      group_policy: disabled
+session_reset:
+  mode: none
+platform_toolsets:
+  cli:
+    - clarify
+    - memory
+    - session_search
+    - skills
+    - todo
+    - tts
+    - vision
+    - web
+  whatsapp:
+    - browser
+    - clarify
+    - memory
+    - session_search
+    - skills
+    - todo
+    - tts
+    - vision
+    - web
+known_plugin_toolsets:
+  cli:
+    - a2a
+    - spotify
+  whatsapp:
+    - a2a
+    - spotify
+known_builtin_toolsets:
+  cli:
+    - browser
+    - clarify
+    - code_execution
+    - computer_use
+    - context_engine
+    - cronjob
+    - delegation
+    - discord
+    - discord_admin
+    - file
+    - homeassistant
+    - image_gen
+    - memory
+    - session_search
+    - skills
+    - spotify
+    - stt
+    - terminal
+    - todo
+    - tts
+    - video
+    - video_gen
+    - vision
+    - web
+    - x_search
+    - yuanbao
+  whatsapp:
+    - browser
+    - clarify
+    - code_execution
+    - computer_use
+    - context_engine
+    - cronjob
+    - delegation
+    - discord
+    - discord_admin
+    - file
+    - homeassistant
+    - image_gen
+    - memory
+    - session_search
+    - skills
+    - spotify
+    - stt
+    - terminal
+    - todo
+    - tts
+    - video
+    - video_gen
+    - vision
+    - web
+    - x_search
+    - yuanbao
+custom_providers:
+  - name: Token-plan-cn.xiaomimimo.com
+    base_url: https://token-plan-cn.xiaomimimo.com/v1
+    key_env: HERMES_CUSTOM_TOKEN_PLAN_CN_XIAOMIMIMO_COM_API_KEY
+    model: mimo-v2.5
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes auth) — OpenAI Codex
+#   nous         (OAuth — hermes auth) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
+#
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
