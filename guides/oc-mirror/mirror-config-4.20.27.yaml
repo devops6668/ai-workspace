@@ -1,0 +1,37 @@
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift.io/v2alpha1
+mirror:
+  platform:
+    channels:
+      - name: stable-4.20
+        minVersion: 4.20.27
+        maxVersion: 4.20.27
+  operators:
+    # Red Hat Operators Catalog
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.20
+      packages:
+        - name: advanced-cluster-management
+        - name: cert-manager-operator
+        - name: cluster-logging
+        - name: compliance-operator
+        - name: k10-kasten-operator-rhmp
+          version: 8.5.6
+        - name: kiali-operator
+        - name: local-storage-operator
+        - name: lvms-operator
+        - name: multicluster-engine
+        - name: openshift-gitops-operator
+        - name: openshift-pipelines-operator-rh
+        - name: opentelemetry-operator
+        - name: quay-bridge-operator
+        - name: servicemeshoperator3
+        - name: tempo-operator
+    # Certified Operators Catalog
+    - catalog: registry.redhat.io/redhat/certified-operator-index:v4.20
+      packages:
+        - name: elasticsearch-eck-operator-certified
+          version: 3.5.0
+        - name: ocs-client-operator
+          version: 4.20.15-rhodf
+        - name: odf-operator
+          version: 4.20.15-rhodf

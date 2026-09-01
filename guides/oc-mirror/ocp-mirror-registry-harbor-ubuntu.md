@@ -362,24 +362,49 @@ echo $XDG_RUNTIME_DIR
 
 ### 5.3 設定 Pull Secret
 
-```bash
-# 從 Red Hat 下載 pull secret
-# https://console.redhat.com/openshift/install/pull-secret
+oc-mirror 需要 auth.json 同時包含：
+- Red Hat Registry 憑證（registry.redhat.io）← 從 OCP pull secret
+- Harbor 憑證（你嘅 mirror registry）← 從 Docker login
+- 其他 registries（docker.io, quay.io 等）← 從現有 ~/.docker/config.json
 
-# 建立 credentials file
+```bash
+# 建立 credentials 目錄
 mkdir -p $XDG_RUNTIME_DIR/containers
 
-# 複製 pull secret
-cat pull-secret.json | jq . > $XDG_RUNTIME_DIR/containers/auth.json
+# ── 方法 1：合併三個來源（推薦）──────────────────────────────────
+# 如果你有現成 ~/.docker/config.json + ocp-pull-secret.yaml
 
-# 加入 Harbor registry credentials
-# podman login 會自動更新 auth.json
+# Step 1: 從 ~/.docker/config.json 開始（保留原有 docker.io, quay.io 等）
+cat ~/.docker/config.json | jq . > $XDG_RUNTIME_DIR/containers/auth.json
+
+# Step 2: 合佢 OCP pull secret（加入 registry.redhat.io 等 Red Hat 憑證）
+jq -s '.[0] * .[1]' $XDG_RUNTIME_DIR/containers/auth.json ocp-pull-secret.yaml \
+  > $XDG_RUNTIME_DIR/containers/auth.json.tmp \
+  && mv $XDG_RUNTIME_DIR/containers/auth.json.tmp $XDG_RUNTIME_DIR/containers/auth.json
+
+# Step 3: 加入 Harbor registry credentials
 podman login <HARBOR_IP> -u admin -p '<密碼>'
 
 # 驗證
-cat $XDG_RUNTIME_DIR/containers/auth.json | jq '.auths | keys'
-# 應該見到 harbor.devops.local, registry.redhat.io 等
+jq '.auths | keys' $XDG_RUNTIME_DIR/containers/auth.json
+# 應該見到: harbor.devops.local, registry.redhat.io, docker.io, quay.io 等
+
+# ── 方法 2：只有 OCP pull secret（冇現成 Docker config）────────
+# 從 Red Hat 下載 pull secret
+# https://console.redhat.com/openshift/install/pull-secret
+
+# 直接用 pull secret 作為 auth.json
+cat ocp-pull-secret.yaml | jq . > $XDG_RUNTIME_DIR/containers/auth.json
+
+# 加入 Harbor registry credentials
+podman login <HARBOR_IP> -u admin -p '<密碼>'
+
+# 驗證
+jq '.auths | keys' $XDG_RUNTIME_DIR/containers/auth.json
+# 應該見到: harbor.devops.local, registry.redhat.io 等
 ```
+
+> **注意：** 方法 1 會保留你原有嘅所有 registries 憑證，唔會被覆蓋。方法 2 會淨係用 Red Hat pull secret，原有嘅 docker.io 等會冇咗。
 
 ---
 
