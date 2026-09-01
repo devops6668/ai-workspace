@@ -532,15 +532,61 @@ oc apply -f /tmp/imageTagMirrorSet.yaml
 oc apply -f /tmp/catalogSource.yaml
 ```
 
-### 8.3 禁用 Default Catalog Sources（可選但建議）
+### 8.3 設定 Catalog Source 優先級（三種方法）
+
+OCP 預設嘅 catalog sources（redhat-operators, certified-operators）會連 registry.redhat.io。你需要決定 Mirror 同 Internet 嘅優先順序。
+
+> **預設行為：** OCP 先嘗試 default sources（internet），再 fallback 到 mirror。Disconnected 環境會 timeout 拖慢 install。
+
+#### 方法 1：Disable 預設 Sources（完全離線，推薦 disconnected）
 
 ```bash
-# 如果你想全部從 mirror pull，禁用 default sources
+# 禁用所有 default sources，淨用 mirror registry
 oc patch OperatorHub cluster --type json \
   -p '[{"op": "add", "path": "/spec/disableAllDefaultSources", "value": true}]'
 ```
 
-> **警告：** 禁用後，所有 operator 必須從 mirror registry 安裝。
+> **效果：** 所有 operator 必須從 mirror registry 安裝，冇 internet fallback。
+
+#### 方法 2：提高 Mirror Priority（先 mirror 後 fallback，推薦 lab/混合環境）
+
+```bash
+# 查看你 mirror CatalogSource 嘅名
+oc get catalogsource -n openshift-marketplace
+
+# 將 mirror source 嘅 priority 設高（default 係 100）
+oc patch catalogsource <YOUR_MIRROR_CATALOG_NAME> \
+  -n openshift-marketplace \
+  --type merge \
+  -p '{"spec":{"priority":200}}'
+```
+
+> **效果：** 先 mirror → 失敗先至 fallback internet。有 internet 時mirror 為主，冇 internet 時自動 fallback。
+
+#### 方法 3：降低 Default Priority（先 mirror 後 fallback，另一種做法）
+
+```bash
+# 降低所有 default sources 嘅 priority
+oc patch catalogsource redhat-operators \
+  -n openshift-marketplace \
+  --type merge \
+  -p '{"spec":{"priority":50}}'
+
+oc patch catalogsource certified-operators \
+  -n openshift-marketplace \
+  --type merge \
+  -p '{"spec":{"priority":50}}'
+```
+
+> **效果：** 同方法 2，但改 default sources 而唔係 mirror source。OCP 升級可能會 reset priority。
+
+#### 比較
+
+| 方法 | 優先順序 | 適用場景 | 注意事項 |
+|------|---------|---------|---------|
+| 方法 1：Disable defaults | 只用 mirror | Disconnected / Production | 冇 internet fallback |
+| 方法 2：提高 mirror priority | 先 mirror → fallback internet | Lab / 混合環境 | 需要記得 mirror source 名 |
+| 方法 3：降低 default priority | 先 mirror → fallback internet | Lab / 混合環境 | OCP 升級可能 reset |
 
 ### 8.4 等待 MCP Rollout
 
