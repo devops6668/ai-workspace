@@ -21,7 +21,8 @@
 12. [日誌位置](#12-日誌位置)
 13. [升級方法](#13-升級方法)
 14. [Multi-Profile 支援](#14-multi-profile-支援)
-15. [Troubleshooting](#15-troubleshooting)
+15. [Multi-Agent 玩法](#15-multi-agent-玩法)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -48,10 +49,13 @@ Container 係 **stateless** 嘅——所有用戶數據（config、API keys、se
 
 ## 3. 快速開始（3 步搞定）
 
-### Step 1: 建立 data 目錄 + 首次設定
+### Step 1: 首次設定（setup wizard）
+
+如果你已經有 `~/.hermes/` 目錄（例如之前已經裝過 Hermes），可以跳過 `mkdir`，直接跑 setup wizard：
 
 ```bash
-mkdir -p ~/.hermes
+# 如果 ~/.hermes 仲未有，先建目錄
+# mkdir -p ~/.hermes
 
 docker run -it --rm \
   -v ~/.hermes:/opt/data \
@@ -499,7 +503,294 @@ services:
 
 ---
 
-## 15. Troubleshooting
+## 15. Multi-Agent 玩法
+
+Hermes 有兩層 multi-agent 能力：**Bot Mode**（多個獨立 agent）同 **Subagent Delegation**（parent agent 分派 subtask 畀 child agents）。
+
+### 15.1 Bot Mode — 多個 Named Agents
+
+每個 Bot 就係一個 Hermes profile——獨立嘅 config、model、memory、skills、sessions。
+
+#### 建立 Bot
+
+```bash
+# 建立新 profile（= 新 Bot）
+docker exec hermes hermes profile create coder
+docker exec hermes hermes profile create researcher
+
+# 查看所有 profiles
+docker exec hermes hermes profile list
+```
+
+#### 每個 Bot 用唔同 Model
+
+每個 profile 有獨立嘅 `config.yaml`：
+
+```bash
+# 設定 coder 用 deepseek
+docker exec hermes hermes -p coder model
+
+# 或者直接 edit profile 嘅 config
+docker exec hermes hermes -p coder config edit
+```
+
+喺 profile 嘅 `~/.hermes/profiles/coder/config.yaml`：
+
+```yaml
+model:
+  provider: openrouter
+  model: deepseek/deepseek-coder
+```
+
+#### 每個 Bot 用唔同 Skills
+
+```bash
+# coder profile 裝 coding skills
+docker exec hermes hermes -p coder skills install official/devops/docker-management
+
+# researcher profile 裝 research skills
+docker exec hermes hermes -p researcher skills install official/research/arxiv-search
+```
+
+#### Bot 之間傾偈（Group Chat）
+
+Bot Mode 支援 Bot-to-Bot messaging——多個 Bot 可以喺同一個 group chat 入面合作：
+
+```
+┌─────────────────────────────────────┐
+│  Group Chat: "project-alpha"        │
+│                                     │
+│  @coder: 我幫你寫咗 API handler     │
+│  @researcher: 我搵到三個方案比較    │
+│  @default: 多謝你哋，我整合返        │
+└─────────────────────────────────────┘
+```
+
+#### 喺 Docker Compose 入面用 Bot Mode
+
+Bot Mode 喺同一個 container 入面跑（s6 supervisor 管理），唔需要額外 container：
+
+```yaml
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    network_mode: host
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_DASHBOARD=1
+```
+
+所有 Bot 都喺同一個 container 入面，透過 `hermes profile create` 建立。s6 會自動管理每個 profile 嘅 gateway lifecycle。
+
+#### Bot Mode 常用命令
+
+```bash
+# 列出所有 bots
+docker exec hermes hermes profile list
+
+# 同特定 bot chat
+docker exec hermes hermes -p coder chat
+
+# 查看 bot 嘅 cron routines
+docker exec hermes hermes cron list
+
+# 刪除 bot
+docker exec hermes hermes profile delete coder
+```
+
+---
+
+### 15.2 Subagent Delegation — 並行工作分派
+
+`delegate_task` 讓 parent agent 開出隔離嘅 child agents，每個 child 有自己嘅 context、terminal session、同 toolset。Child 只有 final summary 會返到 parent。
+
+#### 用途
+
+| 適合 Delegate | 唔適合 Delegate |
+|---------------|-----------------|
+| Reasoning-heavy tasks（debug、code review、research） | 單一 tool call |
+| 會爆 context window 嘅中間數據 | 需要用戶互動嘅 task |
+| 多個獨立工作同時跑 | 簡單嘅 file edit |
+
+#### 單一 Task
+
+```
+幫我 review /home/user/project/src/auth/ 嘅安全性，
+搵 SQL injection、JWT 問題、password handling 問題，
+搵到就修，然後跑 test。
+```
+
+Hermes 會自動用 `delegate_task` 分派。
+
+#### 並行 Batch（最多 3 個 child 同時跑）
+
+```
+同時 research 呢三個 topic：
+1. WebAssembly 喺 browser 以外嘅使用
+2. RISC-V server chip 嘅 adoption
+3. Quantum computing 嘅實際應用
+```
+
+Hermes 會開 3 個 child agents 同時做，做完自動整合。
+
+#### Delegate 配置
+
+喺 `~/.hermes/config.yaml`（或者 container 入面嘅 `/opt/data/config.yaml`）：
+
+```yaml
+delegation:
+  max_iterations: 50        # 每個 child 最多幾多 tool call turns（default: 50）
+  max_concurrent_children: 3  # 同時最多幾多個 child（default: 3）
+  max_spawn_depth: 1         # 幾多層 nested delegation（default: 1 = flat）
+  orchestrator_enabled: true  # child 可唔可以再 delegate
+
+  # 可以指定 child 用唔同嘅 model（慳錢用便宜 model）
+  model: "google/gemini-flash-2.0"
+  provider: "openrouter"
+
+  # 或者用 local model
+  # model: "qwen2.5-coder"
+  # base_url: "http://localhost:1234/v1"
+  # api_key: "local-key"
+```
+
+#### 平行 30 Workers 嘅設定
+
+```yaml
+delegation:
+  max_concurrent_children: 30
+  max_spawn_depth: 2          # 咁 orchestrator child 可以再開 worker
+```
+
+#### Child Agent 嘅限制
+
+- 冇 `clarify`（唔可以問用戶問題）
+- 冇 `memory`（唔可以改 persistent memory）
+- 冇 `cronjob`（唔可以開 cron）
+- 冇 `send_message`
+- 可以用 `execute_code`
+- 繼承 parent 嘅 toolsets
+
+---
+
+### 15.3 完整 Multi-Agent Docker Compose 範例
+
+```yaml
+# docker-compose.yml — Multi-Agent Hermes
+#
+# 一個 container 跑多個 Bots（s6 managed）+ delegate_task 並行工作
+#
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    network_mode: host
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_DASHBOARD=1
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+
+  dashboard:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - hermes
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
+```
+
+啟動後建立 Bots：
+
+```bash
+# 建立多個 specialist bots
+docker exec hermes hermes profile create coder
+docker exec hermes hermes profile create researcher
+docker exec hermes hermes profile create ops
+
+# 每個 bot 設定唔同 model
+# coder → deepseek, researcher → gemini, ops → 本地 ollama
+
+# 喺 Dashboard 或者 Telegram group 入面 @mention 們
+# Bot 會自己傾偈、分工合作
+```
+
+---
+
+### 15.4 多 Container 完全隔離方案
+
+如果需要**獨立資源限制**或者**獨立 image 版本**：
+
+```yaml
+services:
+  hermes-main:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-main
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    network_mode: host
+    volumes:
+      - ~/.hermes-main:/opt/data
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  hermes-coder:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-coder
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    ports:
+      - "8643:8642"
+    volumes:
+      - ~/.hermes-coder:/opt/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  hermes-researcher:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-researcher
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    ports:
+      - "8644:8642"
+    volumes:
+      - ~/.hermes-researcher:/opt/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+```
+
+> ⚠️ 唯一要注意：每個 container 嘅 API_SERVER_PORT 唔可以重複。
+> `network_mode: host` 嘅話直接用唔同 port；bridge 嘅話要 mapping 唔同 host port。
+
+---
+
+## 16. Troubleshooting
 
 | 問題 | 解決方法 |
 |------|----------|
