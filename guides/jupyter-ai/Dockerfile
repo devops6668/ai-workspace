@@ -98,7 +98,7 @@ RUN pip install --no-cache-dir \
 # 4. jupyter-ai v3.x (with Jupyternaut persona)
 # =============================================================================
 RUN pip install --no-cache-dir \
-    "jupyter-ai>=3.1.0" \
+    "jupyter-ai[jupyternaut]>=3.1.0" \
     litellm
 
 # =============================================================================

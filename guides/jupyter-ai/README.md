@@ -427,7 +427,7 @@ RUN useradd -m -s /bin/bash jovyan \
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir \
     jupyterlab>=4.0 \
-    "jupyter-ai>=3.1.0" \
+    "jupyter-ai[jupyternaut]>=3.1.0" \
     litellm>=1.0.0
 
 # Data Science (可選)
