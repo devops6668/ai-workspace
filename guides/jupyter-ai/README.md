@@ -612,12 +612,12 @@ kubectl exec -n jupyterhub <pod-name> -- claude auth login
 
 ### 問題描述
 
-v3.x 使用 **LangGraph + SQLite checkpointer** 管理 chat history。每次 chat 都會累積 messages，全部 stored 喺最新 checkpoint 入面。Local model（如 2048 token context window）好容易爆 context。
+v3.x 使用 **LangGraph + SQLite checkpointer** 管理 chat history。每次 chat 都會累積 messages，全部 stored 喺最新 checkpoint 入面。Local model 好容易爆 context。
 
-> **⚠️ v3 冇 `k` 值 concept**
-> - v2 用 `ConversationBufferWindowMemory`，有 `k` 值 limit history
-> - v3 用 LangGraph checkpointer，**冇 built-in truncation**
-> - `--AiExtension.default_max_chat_history` 係 v2 flag，v3 冇效
+> **⚠️ v3 版本差異**
+> - v3.0.x：冇 `default_max_chat_history` traitlet，冇 built-in truncation
+> - v3.2.0+：**有** `--AiExtension.default_max_chat_history` traitlet（回復 v2 功能）
+> - v3.2.0+ 同時加咗 persistent memory opt-in（`pip install jupyter-ai-jupyternaut[persistence]`）
 
 ### 根因
 
@@ -629,7 +629,34 @@ v3.x 使用 **LangGraph + SQLite checkpointer** 管理 chat history。每次 cha
 - `max_tokens` 只控制 output，唔控制 input history
 - 設 `max_tokens` >= model context window 會令情况更差
 
-### 解決方案：Patch `jupyternaut.py`
+### 解決方案
+
+#### 方案 A：升級到 v3.2.0+（推薦，有 built-in setting）
+
+```bash
+pip install "jupyter-ai[jupyternaut]>=3.2.0"
+```
+
+啟動時加 flag：
+```bash
+jupyter lab --AiExtension.default_max_chat_history=2
+```
+
+Helm deployment：
+```yaml
+singleuser:
+  extraFiles:
+    ipython-config:
+      mountPath: /etc/jupyter/ipython_config.py
+      stringData: |
+        c = get_config()
+        c.AiExtension.default_max_chat_history = 2
+```
+
+> **注意**：v3.2.0 同時將 persistent memory 改為 opt-in。
+> 如需 persistent memory，安裝：`pip install jupyter-ai-jupyternaut[persistence]`
+
+#### 方案 B：Patch `jupyternaut.py`（適用於 v3.0.x）
 
 在 `jupyternaut.py` 加入 `_auto_prune_history()` method，每次 send message 之前自動 truncate 最新 checkpoint 嘅 messages。
 
@@ -749,7 +776,7 @@ kubectl exec -n jupyterhub <pod> -- head -5 \
 
 ## 版本資訊
 
-- **指南版本**: 2.2
+- **指南版本**: 2.3
 - **建立日期**: 2026-07-21
 - **更新日期**: 2026-09-04
 - **作者**: Paul Wong (via Hermes Agent)
