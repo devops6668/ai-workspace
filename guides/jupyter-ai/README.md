@@ -608,6 +608,122 @@ kubectl exec -n jupyterhub <pod-name> -- claude auth login
 
 ---
 
+## v3.x Context Overflow 問題與解決方案
+
+### 問題描述
+
+v3.x 使用 **LangGraph + SQLite checkpointer** 管理 chat history。每次 chat 都會累積 messages，全部 stored 喺最新 checkpoint 入面。Local model（如 2048 token context window）好容易爆 context。
+
+> **⚠️ v3 冇 `k` 值 concept**
+> - v2 用 `ConversationBufferWindowMemory`，有 `k` 值 limit history
+> - v3 用 LangGraph checkpointer，**冇 built-in truncation**
+> - `--AiExtension.default_max_chat_history` 係 v2 flag，v3 冇效
+
+### 根因
+
+```
+最新 checkpoint → 包含 ALL messages → agent.astream 載入 → send 畀 model → 爆 context
+```
+
+- Prune 舊 checkpoints **冇用**——最新 checkpoint 已經有晒全部 messages
+- `max_tokens` 只控制 output，唔控制 input history
+- 設 `max_tokens` >= model context window 會令情况更差
+
+### 解決方案：Patch `jupyternaut.py`
+
+在 `jupyternaut.py` 加入 `_auto_prune_history()` method，每次 send message 之前自動 truncate 最新 checkpoint 嘅 messages。
+
+**Patch 內容：**
+
+```python
+# 1. 加 import（原 file 冇）
+import os
+import json  # 必須加！
+
+# 2. 加 _auto_prune_history method（process_message 之前）
+async def _auto_prune_history(self, max_messages=8):
+    """Truncate chat history in latest checkpoint to limit context."""
+    try:
+        memory_path = os.path.join(jupyter_data_dir(), "jupyter_ai", "memory.sqlite")
+        if not os.path.exists(memory_path):
+            return
+        conn = await aiosqlite.connect(memory_path)
+        thread_id = self.ychat.get_id()
+        cursor = await conn.execute(
+            "SELECT checkpoint_id, checkpoint FROM checkpoints "
+            "WHERE thread_id=? ORDER BY rowid DESC LIMIT 1",
+            (thread_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            await conn.close()
+            return
+        cp_id, cp_data = row
+        data = json.loads(cp_data)
+        if "channel_values" in data and "messages" in data["channel_values"]:
+            msgs = data["channel_values"]["messages"]
+            if len(msgs) > max_messages:
+                data["channel_values"]["messages"] = msgs[-max_messages:]
+                if "versions" in data:
+                    data["versions"]["messages"] = data["versions"].get("messages", 0) + 1
+                await conn.execute(
+                    "UPDATE checkpoints SET checkpoint=? WHERE checkpoint_id=?",
+                    (json.dumps(data), cp_id)
+                )
+                await conn.commit()
+                self.log.info(f"Truncated chat history from {len(msgs)} to {max_messages} messages")
+        await conn.close()
+    except Exception as e:
+        self.log.warning(f"Auto-prune failed: {e}")
+
+# 3. process_message 入面加 call（agent.astream 之前）
+await self._auto_prune_history(max_messages=8)
+```
+
+### Helm 永久部署
+
+用 `singleuser.extraFiles` 將 patched file embed 入 Helm values：
+
+```yaml
+singleuser:
+  extraFiles:
+    jupyternaut-patch:
+      mountPath: /opt/conda/lib/python3.12/site-packages/jupyter_ai_jupyternaut/jupyternaut/jupyternaut.py
+      stringData: |
+        import os
+        import json
+        from typing import Any
+        # ... 完整 patched file content ...
+```
+
+> **⚠️ Helm chart 4.x 限制：**
+> - `singleuser.extraArgs` — 唔存在
+> - `singleuser.extraVolumes` — 唔存在
+> - `singleuser.extraVolumeMounts` — 唔存在
+> - 只有 `singleuser.extraFiles` 同 `singleuser.extraEnv` 可用
+
+### `max_messages` 調校
+
+| max_messages | Exchanges | 適用 model |
+|---|---|---|
+| 4 | 2 | 2K-4K context |
+| 8 | 4 | 8K context |
+| 16 | 8 | 32K context |
+| 32 | 16 | 128K context |
+
+### 驗證
+
+```bash
+kubectl exec -n jupyterhub <pod> -- grep "_auto_prune_history" \
+  /opt/conda/lib/python3.12/site-packages/jupyter_ai_jupyternaut/jupyternaut/jupyternaut.py
+
+kubectl exec -n jupyterhub <pod> -- head -5 \
+  /opt/conda/lib/python3.12/site-packages/jupyter_ai_jupyternaut/jupyternaut/jupyternaut.py
+# 應該見到 import os, import json
+```
+
+---
+
 ## 參考資源
 
 ### 官方文檔
@@ -633,9 +749,9 @@ kubectl exec -n jupyterhub <pod-name> -- claude auth login
 
 ## 版本資訊
 
-- **指南版本**: 2.1
+- **指南版本**: 2.2
 - **建立日期**: 2026-07-21
-- **更新日期**: 2026-09-01
+- **更新日期**: 2026-09-04
 - **作者**: Paul Wong (via Hermes Agent)
 - **基於**: jupyter-ai v3.1.3, JupyterHub 4.2.0 (Helm chart), K3s
 - **更新**: v2.1 - 同步官方 repo，修正版本號、Agent 安裝方式、移除手動 extension enable
