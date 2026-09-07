@@ -1,0 +1,41 @@
+# 使用指定的 base image
+FROM quay.io/jupyter/datascience-notebook:python-3.12.11
+
+# 切换到 root 用户以安装软件
+USER root
+
+# 安装 Node.js 20（jupyter-ai v3.x 扩展构建需要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl build-essential && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 更新 pip 并安装 Jupyter AI 3.0.1（稳定版本）
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    "jupyterlab>=4.4.0,<5.0.0" \
+    "jupyter-ai[jupyternaut]==3.0.1" \
+    "jupyter-ai-persona-manager>=0.0.11,<0.1.0" \
+    "jupyter-ai-jupyternaut>=0.0.11,<0.1.0" \
+    "jupyter-ai-litellm>=0.0.2,<0.1.0" \
+    "litellm>=1.0.0" \
+    "aiosqlite>=0.20.0" \
+    "langgraph-checkpoint-sqlite>=3.0.0"
+
+# 修补 persona-manager 的 send_message 方法
+# jupyternaut 调用 send_message(body, subtitle) 两个参数，
+# 但 persona-manager 只接受一个参数，是上游 bug。
+RUN python3 -c "import pathlib; import jupyter_ai_persona_manager; bp=pathlib.Path(jupyter_ai_persona_manager.__file__).parent/'base_persona.py'; s=bp.read_text(); s=s.replace('def send_message(self, body: str) -> None:', 'def send_message(self, body: str, subtitle: str = \"\") -> None:'); bp.write_text(s); print('Patched send_message')"
+
+# 切换回默认用户
+USER ${NB_UID}
+
+# 设置工作目录
+WORKDIR /home/${NB_USER}/work
+
+# 暴露 Jupyter Lab 端口
+EXPOSE 8888
+
+# 启动 Jupyter Lab
+CMD ["start-notebook.sh"]
