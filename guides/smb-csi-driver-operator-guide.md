@@ -20,6 +20,13 @@
   - [建立 PV](#建立-pv)
   - [建立 PVC](#建立-pvc-1)
 - [StorageClass 參數參考](#storageclass-參數參考)
+- [Network 不穩定最佳實踐](#network-不穩定最佳實踐)
+  - [問題](#問題)
+  - [解決方案](#解決方案)
+  - [推薦 StorageClass (Network 不穩定版)](#推薦-storageclass-network-不穩定版)
+  - [Deployment 加 liveness probe](#deployment-加-liveness-probe)
+  - [Node Stage 說明](#node-stage-說明)
+  - [隔離 workload](#隔離-workload)
 - [限制](#限制)
 - [Troubleshooting](#troubleshooting)
 - [參考資料](#參考資料)
@@ -399,6 +406,179 @@ oc get pvc pvc-smb-static
 |----|------|
 | `Delete` | PVC 刪除後，自動刪除 SMB server 上嘅 subdirectory |
 | `Retain` | PVC 刪除後保留 share，需手動清理 |
+
+---
+
+## Network 不穩定最佳實踐
+
+> SMB server 本身穩定，但中間 network 唔穩定（時斷時連）。呢個 section 解決 kernel SMB mount hang 住 Pod / node 嘅問題。
+
+### 問題
+
+Network 斷線時，kernel 嘅 CIFS mount 會 block 住 Pod 嘅 I/O。預設 `hard` mount 會等好耐（`timeo` 預設 700 = 70 秒）先 timeout，期間 Pod 嘅 process 完全 hang，可能影響 node 上面其他 workload。
+
+### 解決方案
+
+**核心：`soft` + `timeo` + `reconnect`**
+
+```yaml
+mountOptions:
+  - soft          # timeout 返 error 而唔 hang（最重要）
+  - timeo=50      # 5 秒 timeout (50 x 0.1s)
+  - reconnect     # network 恢復後自動重連
+  - actimeo=30    # attribute cache 30 秒
+```
+
+| Option | 說明 | 為咩要加 |
+|--------|------|----------|
+| `soft` | I/O timeout 返 error 畀 application，唔會 hang | 呢個係防止 node hang 嘅關鍵 |
+| `timeo=50` | SMB response timeout 5 秒 (50 x 0.1s) | 預設 700 (70秒) 太長 |
+| `reconnect` | 斷線後 kernel 自動嘗試重連 | network 恢復後自動恢復 |
+| `actimeo=30` | Attribute cache timeout 30 秒 | 減少 stale cache |
+
+> **`soft` vs `hard`：** `hard` (default) 會 hang 直到 server 回應，process 完全 block；`soft` timeout 返 error，application 可以 retry 或 graceful fail，唔會拖住個 node。Network 唔穩定嘅場景必須用 `soft`。
+
+### 推薦 StorageClass (Network 不穩定版)
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: smb
+provisioner: smb.csi.k8s.io
+parameters:
+  source: //smb-server.example.com/share
+  csi.storage.k8s.io/provisioner-secret-name: smbcreds
+  csi.storage.k8s.io/provisioner-secret-namespace: default
+  csi.storage.k8s.io/node-stage-secret-name: smbcreds
+  csi.storage.k8s.io/node-stage-secret-namespace: default
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+mountOptions:
+  - soft
+  - timeo=50
+  - reconnect
+  - actimeo=30
+  - dir_mode=0777
+  - file_mode=0777
+  - uid=1001
+  - gid=1001
+  - noperm
+  - mfsymlinks
+  - cache=strict
+  - noserverino
+```
+
+### Deployment 加 liveness probe
+
+Network 斷線時 I/O hang，liveness probe 會偵測到並自動重啟 Pod：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-smb
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-smb
+  template:
+    metadata:
+      labels:
+        app: nginx-smb
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+      - name: nginx
+        image: quay.io/centos/centos:stream8
+        command:
+          - "/bin/bash"
+          - "-c"
+          - |
+            set -euo pipefail
+            while true; do
+              echo "$(date) - test from nginx-smb" >> /mnt/smb/outfile
+              sleep 1
+            done
+        volumeMounts:
+          - name: smb-volume
+            mountPath: /mnt/smb
+            readOnly: false
+        livenessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -c
+              - "touch /mnt/smb/liveness-check && rm -f /mnt/smb/liveness-check"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -c
+              - "test -w /mnt/smb"
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        resources:
+          limits:
+            memory: 128Mi
+            cpu: 250m
+          requests:
+            memory: 64Mi
+            cpu: 50m
+      volumes:
+        - name: smb-volume
+          persistentVolumeClaim:
+            claimName: pvc-smb
+```
+
+> **liveness probe** 用 `touch + rm` 測試 mount 是否可寫。`timeoutSeconds: 5` 確保 probe 唔會 hang。`failureThreshold: 3` 即連續 3 次失敗先重啟。
+>
+> **readiness probe** 用 `test -w` 測試 mount 是否可寫。斷線時 Pod 會先被移出 Service，避免流量打到 hang 嘅 Pod。
+
+### Node Stage 說明
+
+Node stage 係 CSI driver 喺**每個 node 上面**做嘅 mount 步驟：
+
+```
+Pod mount 請求
+    ↓
+Node Stage (staging dir)
+  1. 用 node-stage-secret 認證
+  2. 執行 mount -t cifs //server/share /var/lib/kubelet/.../mount
+    ↓
+Pod mount point
+  3. bind mount staging dir → Pod /mnt/smb
+```
+
+- **Node Stage** — 做真正嘅 CIFS mount（需要 `node-stage-secret`）
+- **Node Publish** — 只係 bind mount staging dir → Pod mount point（冇額外認證）
+- 如果 Pod 刪除但 staging dir 仲 mount 緊，CSI driver 可以**重用**呢個 mount，唔使每次重新 CIFS connect
+
+> **必須加 `node-stage-secret`：** 呢個唔係 default 會自動帶嘅。你唔寫嘅話 Node stage 冇認證資訊，CIFS mount 會 fail。StorageClass 入面要同時寫 `provisioner-secret`（建 share 用）同 `node-stage-secret`（mount 用）。
+
+### 隔離 workload
+
+SMB workload 只 scheduling 到 worker node，唔好影響 control plane：
+
+```yaml
+# Deployment 加
+nodeSelector:
+  node-role.kubernetes.io/workload: ""
+tolerations:
+  - key: "node-role.kubernetes.io/worker"
+    operator: "Exists"
+    effect: "NoSchedule"
+```
 
 ---
 
