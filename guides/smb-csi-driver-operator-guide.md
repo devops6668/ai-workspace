@@ -2,8 +2,11 @@
 
 > 適用於 OpenShift Container Platform 4.x
 
+> 架構圖: [smb-csi-architecture.html](smb-csi-architecture.html) (用瀏覽器打開)
+
 ## Table of Contents
 
+- [架構圖](#架構圖)
 - [概述](#概述)
 - [前置條件](#前置條件)
 - [安裝 Operator](#安裝-operator)
@@ -20,6 +23,31 @@
 - [限制](#限制)
 - [Troubleshooting](#troubleshooting)
 - [參考資料](#參考資料)
+
+---
+
+## 架構圖
+
+> 用瀏覽器打開: [smb-csi-architecture.html](smb-csi-architecture.html)
+
+架構包含以下組件：
+
+- **Application Pod** — 你嘅 workload，透過 PVC 掛載 SMB share
+- **PersistentVolumeClaim** — 動態 provisioning 時由 StorageClass 自動建立
+- **StorageClass (smb)** — 定義 SMB server source + Secret 認證
+- **Secret (smbcreds)** — SMB 帳號密碼，provisioner 同 node stage 都會用
+- **Controller Deployment** — 包含 csi-provisioner, csi-resizer, liveness-probe, kube-rbac-proxy
+- **Node DaemonSet** — 每個 node 一個 pod，負責 CIFS mount
+- **SMB Server** — 外部 Samba/Windows Server，提供 CIFS/SMB share
+- **ClusterCSIDriver CR** — Operator 嘅入口，定義 `smb.csi.k8s.io`
+
+### 流量說明
+
+1. Application Pod 透過 PVC 請求 storage
+2. Provisioner 根據 StorageClass 嘅 `source` 參數喺 SMB server 上建立 subdirectory
+3. Node DaemonSet 喺每個 node 上做 CIFS mount
+4. Provisioner 同 node stage 都會用 Secret 做認證
+5. Operator 監聽 ClusterCSIDriver CR，自動 reconcile 所有資源
 
 ---
 
