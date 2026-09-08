@@ -22,11 +22,11 @@
 - [StorageClass 參數參考](#storageclass-參數參考)
 - [Network 不穩定最佳實踐](#network-不穩定最佳實踐)
   - [問題](#問題)
-  - [解決方案](#解決方案)
-  - [推薦 StorageClass (Network 不穩定版)](#推薦-storageclass-network-不穩定版)
-  - [Deployment 加 liveness probe](#deployment-加-liveness-probe)
+  - [SMB CSI Driver 嘅 mountOptions 限制](#smb-csi-driver-嘅-mountoptions-限制)
+  - [解決方案（SMB CSI 支援範圍內）](#解決方案smb-csi-支援範圍內)
+  - [推薦 StorageClass (SMB CSI 支援版)](#推薦-storageclass-smb-csi-支援版)
+  - [Deployment 完整範例 (Network 不穩定版)](#deployment-完整範例-network-不穩定版)
   - [Node Stage 說明](#node-stage-說明)
-  - [隔離 workload](#隔離-workload)
 - [限制](#限制)
 - [Troubleshooting](#troubleshooting)
 - [參考資料](#參考資料)
@@ -417,28 +417,113 @@ oc get pvc pvc-smb-static
 
 Network 斷線時，kernel 嘅 CIFS mount 會 block 住 Pod 嘅 I/O。預設 `hard` mount 會等好耐（`timeo` 預設 700 = 70 秒）先 timeout，期間 Pod 嘅 process 完全 hang，可能影響 node 上面其他 workload。
 
-### 解決方案
+### SMB CSI Driver 嘅 mountOptions 限制
 
-**核心：`soft` + `timeo` + `reconnect`**
+> **重要：** SMB CSI driver (`smb.csi.k8s.io`) 嘅 StorageClass `mountOptions` **只接受 CIFS mount flags**，唔接受 `mount.cifs` 層面嘅選項。
+>
+> 呢個意味住 `soft`, `timeo`, `reconnect`, `actimeo` **全部唔可以用**——放咗入去會導致 PVC pending，因為 driver reject 咗呢啲 options。
+
+支援嘅 mountOptions 類型：
+
+| 類型 | 範例 | 狀態 |
+|------|------|------|
+| CIFS mount flags | `dir_mode`, `file_mode`, `uid`, `gid`, `vers`, `nounix`, `noserverino` | ✅ 支援 |
+| mount.cifs 選項 | `soft`, `timeo`, `reconnect`, `actimeo`, `hard` | ❌ 唔支援，PVC pending |
+
+> 你實測確認咗 `timeo=50` 同 `reconnect` 會導致 PVC pending。呢個係 driver 嘅已知限制，唔係 StorageClass 設定問題。
+
+### 解決方案（SMB CSI 支援範圍內）
+
+既然 `soft`/`timeo` 唔可以用，你要靠 **Application 層面** 同 **Pod 層面** 嚟保護：
+
+**1. Pod liveness probe 偵測 I/O 卡死**
+
+Network 斷線時 I/O hang，liveness probe 偵測到並自動重啟 Pod：
 
 ```yaml
-mountOptions:
-  - soft          # timeout 返 error 而唔 hang（最重要）
-  - timeo=50      # 5 秒 timeout (50 x 0.1s)
-  - reconnect     # network 恢復後自動重連
-  - actimeo=30    # attribute cache 30 秒
+livenessProbe:
+  exec:
+    command:
+      - /bin/bash
+      - -c
+      - "touch /mnt/smb/liveness-check && rm -f /mnt/smb/liveness-check"
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  exec:
+    command:
+      - /bin/bash
+      - -c
+      - "test -w /mnt/smb"
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 2
 ```
 
-| Option | 說明 | 為咩要加 |
-|--------|------|----------|
-| `soft` | I/O timeout 返 error 畀 application，唔會 hang | 呢個係防止 node hang 嘅關鍵 |
-| `timeo=50` | SMB response timeout 5 秒 (50 x 0.1s) | 預設 700 (70秒) 太長 |
-| `reconnect` | 斷線後 kernel 自動嘗試重連 | network 恢復後自動恢復 |
-| `actimeo=30` | Attribute cache timeout 30 秒 | 減少 stale cache |
+> **liveness probe** 用 `touch + rm` 測試 mount 是否可寫。`timeoutSeconds: 5` 確保 probe 唔會 hang。`failureThreshold: 3` 即連續 3 次失敗先重啟。
+>
+> **readiness probe** 用 `test -w` 測試 mount 是否可寫。斷線時 Pod 會先被移出 Service，避免流量打到 hang 嘅 Pod。
 
-> **`soft` vs `hard`：** `hard` (default) 會 hang 直到 server 回應，process 完全 block；`soft` timeout 返 error，application 可以 retry 或 graceful fail，唔會拖住個 node。Network 唔穩定嘅場景必須用 `soft`。
+**2. Application 加 timeout / retry**
 
-### 推薦 StorageClass (Network 不穩定版)
+你嘅 application 自己要做 I/O timeout 處理，例如：
+- 寫入操作加 timeout
+- 讀取操作加 retry logic
+- 用 `O_NONBLOCK` 或 async I/O
+
+**3. 隔離 workload**
+
+SMB workload 只 scheduling 到 worker node，唔好影響 control plane：
+
+```yaml
+nodeSelector:
+  node-role.kubernetes.io/workload: ""
+tolerations:
+  - key: "node-role.kubernetes.io/worker"
+    operator: "Exists"
+    effect: "NoSchedule"
+resources:
+  limits:
+    memory: 128Mi
+    cpu: 250m
+  requests:
+    memory: 64Mi
+    cpu: 50m
+```
+
+Resource limits 確保即使 I/O hang，Pod 都唔會耗盡 node 資源。
+
+**4. 如果需要 `soft`/`timeo` 控制**
+
+如果真係需要控制 kernel SMB mount timeout，有兩個選擇：
+
+- **Static provisioning (PV)**：喺 PV 嘅 `spec.mountOptions` 加，因為 PV 不經過 CSI driver 嘅 validation
+- **Node 級別設定**：喺 OCP node 上面設 `/etc/samba/smb.conf` 全局 mount options（但呢個影響所有 SMB mount）
+
+> **Static PV 範例（可以加 soft/timeo）：**
+>
+> ```yaml
+> apiVersion: v1
+> kind: PersistentVolume
+> metadata:
+>   name: pv-smb-static
+> spec:
+>   mountOptions:
+>     - soft
+>     - timeo=50
+>     - dir_mode=0777
+>     - file_mode=0777
+>   csi:
+>     driver: smb.csi.k8s.io
+>     # ... 其他參數
+> ```
+>
+> Static PV 嘅 `mountOptions` 由 kubelet 直接使用，唔經 CSI driver validation，所以可以加 `soft`/`timeo`。但你就要自己管理 PV lifecycle，冇動態 provisioning 嘅便利。
+
+### 推薦 StorageClass (SMB CSI 支援版)
 
 ```yaml
 apiVersion: storage.k8s.io/v1
@@ -456,10 +541,6 @@ reclaimPolicy: Delete
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
 mountOptions:
-  - soft
-  - timeo=50
-  - reconnect
-  - actimeo=30
   - dir_mode=0777
   - file_mode=0777
   - uid=1001
@@ -470,9 +551,9 @@ mountOptions:
   - noserverino
 ```
 
-### Deployment 加 liveness probe
+> 注意：冇 `soft`, `timeo`, `reconnect`, `actimeo`——呢啲喺 SMB CSI driver 嘅動態 provisioning 唔支援。
 
-Network 斷線時 I/O hang，liveness probe 會偵測到並自動重啟 Pod：
+### Deployment 完整範例 (Network 不穩定版)
 
 ```yaml
 apiVersion: apps/v1
@@ -492,6 +573,10 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/os: linux
+      tolerations:
+        - key: "node-role.kubernetes.io/worker"
+          operator: "Exists"
+          effect: "NoSchedule"
       containers:
       - name: nginx
         image: quay.io/centos/centos:stream8
@@ -541,10 +626,6 @@ spec:
             claimName: pvc-smb
 ```
 
-> **liveness probe** 用 `touch + rm` 測試 mount 是否可寫。`timeoutSeconds: 5` 確保 probe 唔會 hang。`failureThreshold: 3` 即連續 3 次失敗先重啟。
->
-> **readiness probe** 用 `test -w` 測試 mount 是否可寫。斷線時 Pod 會先被移出 Service，避免流量打到 hang 嘅 Pod。
-
 ### Node Stage 說明
 
 Node stage 係 CSI driver 喺**每個 node 上面**做嘅 mount 步驟：
@@ -565,20 +646,6 @@ Pod mount point
 - 如果 Pod 刪除但 staging dir 仲 mount 緊，CSI driver 可以**重用**呢個 mount，唔使每次重新 CIFS connect
 
 > **必須加 `node-stage-secret`：** 呢個唔係 default 會自動帶嘅。你唔寫嘅話 Node stage 冇認證資訊，CIFS mount 會 fail。StorageClass 入面要同時寫 `provisioner-secret`（建 share 用）同 `node-stage-secret`（mount 用）。
-
-### 隔離 workload
-
-SMB workload 只 scheduling 到 worker node，唔好影響 control plane：
-
-```yaml
-# Deployment 加
-nodeSelector:
-  node-role.kubernetes.io/workload: ""
-tolerations:
-  - key: "node-role.kubernetes.io/worker"
-    operator: "Exists"
-    effect: "NoSchedule"
-```
 
 ---
 
