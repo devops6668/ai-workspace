@@ -51,7 +51,7 @@ Credentials 解密讀取
 - **Keyring Backend**: `keyrings.alt.file.EncryptedKeyring`
 - **加密算法**: AES (PyCryptodome)
 - **存儲位置**: `/home/jovyan/.local/share/python_keyring/keyring_pass.cfg`
-- **Encryption Key**: 用戶自己設定（建議用 AD password）
+- **Encryption Key**: 用戶自己設定（建議用自定 password）
 
 ### 優點
 - ✅ 用戶自己管理 credentials
@@ -215,7 +215,7 @@ import getpass
 
 print("=== 設定 Encryption Key ===")
 print("呢個 key 會用嚟加密你嘅 credentials")
-print("建議用你嘅 AD password 或者其他 secret")
+print("建議用你自定 password 或者其他 secret")
 print()
 
 # 1. 設定用 EncryptedKeyring
@@ -303,7 +303,7 @@ else:
 
 ### 安全注意事項
 
-1. **Encryption Key**: 建議用用戶嘅 AD password 或者其他 secret
+1. **Encryption Key**: 建議用用戶嘅 password 或者其他 secret
 2. **不要共享**: Encryption Key 不要與其他人共享
 3. **Pod 重啟**: 每次 Pod 重啟都需要重新輸入 encryption key
 4. **Keyring 檔案**: 存喺用戶嘅 PVC 入面，其他用戶睇唔到
@@ -331,6 +331,6 @@ else:
 | **Encryption Algorithm** | AES (PyCryptodome) |
 | **Keyring Backend** | `keyrings.alt.file.EncryptedKeyring` |
 | **Storage Location** | `/home/jovyan/.local/share/python_keyring/keyring_pass.cfg` |
-| **Encryption Key** | 用戶自己設定（建議用 AD password） |
+| **Encryption Key** | 用戶自己設定（建議自定  password） |
 | **Pod 重啟** | 需要重新輸入 encryption key |
 | **安全等級** | 高（AES 加密） |
