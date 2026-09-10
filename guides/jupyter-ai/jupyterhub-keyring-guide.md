@@ -323,7 +323,18 @@ else:
 3. 確保 `python_keyring` 目錄存在
 
 ---
+### 結果
+```
+jovyan@jupyter-paul-wong---8c13526e:~/.local/share/python_keyring$ cat crypted_pass.cfg 
+[mydb1]
+paul_2ewong = 
+        eyJzYWx0IjogIkUyNWdRaEJMTHU2QVd2MWpzc0FpeThteGNDR0hVZkRLQ1dkL0hjbitHWWc9Iiwg
+        IklWIjogImRYYlRPa0FRV2pMVDNMYTR3cTd3V3c9PSIsICJwYXNzd29yZF9lbmNyeXB0ZWQiOiAi
+        RzJ2L09hdS81ZWhtMlljPSJ9
 
+
+```
+---
 ## 總結
 
 | 項目 | 內容 |
