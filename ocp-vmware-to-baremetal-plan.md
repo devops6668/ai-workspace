@@ -2111,7 +2111,7 @@ oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
 # nodeSelector values:
 #   - infra02.example.com  # keep
 #   - infra03.example.com  # keep
-#   - master01-bm          # keep (already added in Phase 2)
+#   - master01-bm          # keep (added in B1a)
 #   #- infra01.example.com # remove
 
 # Update LocalVolumeSet (same)
