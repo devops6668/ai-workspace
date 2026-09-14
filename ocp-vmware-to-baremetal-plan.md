@@ -2028,13 +2028,29 @@ oc get pods -n openshift-monitoring -o wide | grep master
 
 > **Reference:** ODF 4.20 Replacing nodes - Section 2.1.1
 
-This is the most complex step. Move ODF/Ceph OSD from infra01-03 to master01-03, one node at a time.
+**Key concept: Add-then-remove.** ODF/Ceph OSD should already be on master BM nodes (from Phase 2). This step removes ODF from the old VMware infra VMs, NOT adding new OSDs.
+
+```
+For each infra VM (infra01-03):
+  1. Verify OSD already running on corresponding master BM node
+  2. Scale down ODF pods on old infra VM
+  3. Update LocalVolumeDiscovery + LocalVolumeSet (remove old VM node)
+  4. Delete old OSD from Ceph
+  5. Cordon + Drain + Delete old infra VM
+  6. Wait for Ceph HEALTH_OK
+  7. Repeat for next infra VM
+```
 
 #### Step B1: Move ODF from infra01 to master01
 
-**B1a. Verify Ceph health**
+**B1a. Verify OSD already on master01**
 
 ```bash
+# Confirm Ceph OSD pods running on master01 (from Phase 2)
+oc get pods -n openshift-storage -o wide | grep master01 | grep osd
+# Expected: OSD pods running on master01
+
+# Confirm Ceph health
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph health
 ceph osd status
@@ -2060,33 +2076,19 @@ oc scale deployment rook-ceph-mon-c --replicas=0 -n openshift-storage
 oc scale deployment --selector=app=rook-ceph-crashcollector,node_name=infra01 --replicas=0 -n openshift-storage
 ```
 
-**B1d. Cordon + Drain + Delete infra01**
-
-```bash
-oc adm cordon infra01
-oc adm drain infra01 --force --delete-emptydir-data --ignore-daemonsets
-oc delete node infra01
-```
-
-**B1e. Add ODF label to master01**
-
-```bash
-oc label node master01-bm cluster.ocs.openshift.io/openshift-storage=""
-```
-
-**B1f. Update LocalVolumeDiscovery + LocalVolumeSet**
+**B1d. Update LocalVolumeDiscovery + LocalVolumeSet (remove infra01, keep master01)**
 
 ```bash
 # Find local storage namespace
 local_storage_project=$(oc get csv --all-namespaces | awk '{print $1}' | grep local)
 echo $local_storage_project
 
-# Update LocalVolumeDiscovery (add master01, remove infra01)
+# Update LocalVolumeDiscovery (remove infra01)
 oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
 # nodeSelector values:
 #   - infra02.example.com  # keep
 #   - infra03.example.com  # keep
-#   - master01-bm          # add
+#   - master01-bm          # keep (already added in Phase 2)
 #   #- infra01.example.com # remove
 
 # Update LocalVolumeSet (same)
@@ -2094,24 +2096,7 @@ oc edit -n $local_storage_project localvolumeset localblock
 # Same changes
 ```
 
-**B1g. Verify new PV**
-
-```bash
-oc get pv | grep localblock | grep Available
-# Expected: new Available PV present
-```
-
-**B1h. Wait for Ceph Rebalance**
-
-```bash
-# May take several hours
-oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
-ceph health
-# Wait for HEALTH_OK
-exit
-```
-
-**B1i. Delete old OSD**
+**B1e. Delete old OSD from Ceph**
 
 ```bash
 # Get old OSD ID
@@ -2132,7 +2117,7 @@ oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage -w
 oc delete job ocs-osd-removal-job -n openshift-storage
 ```
 
-**B1j. Clean up released PVs and crashcollector**
+**B1f. Clean up released PVs and crashcollector**
 
 ```bash
 # Delete released PVs
@@ -2143,14 +2128,25 @@ oc delete pv <released-pv>
 oc delete deployment --selector=app=rook-ceph-crashcollector,node_name=infra01 -n openshift-storage
 ```
 
-**B1k. Verify ODS on master01**
+**B1g. Cordon + Drain + Delete infra01**
 
 ```bash
-oc get pods -o wide -n openshift-storage | grep master01 | grep osd
-# Expected: new OSD pods running on master01
+oc adm cordon infra01
+oc adm drain infra01 --force --delete-emptydir-data --ignore-daemonsets
+oc delete node infra01
 ```
 
-**B1l. Wait for Stability**
+**B1h. Wait for Ceph Rebalance**
+
+```bash
+# May take several hours
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph health
+# Wait for HEALTH_OK
+exit
+```
+
+**B1i. Wait for Stability**
 
 ```
 Wait at least 24 hours:
