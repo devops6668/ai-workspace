@@ -1008,20 +1008,196 @@ Replace worker01-03 VMware VMs with bare metal nodes. Each worker is replaced on
 
 ### Phase 1 Prerequisites
 
+#### Hardware Requirements
+
 - [ ] 3 bare metal servers provisioned (match worker specs)
 - [ ] worker01: 8 CPU, 32GB RAM
 - [ ] worker02: 8 CPU, 32GB RAM
 - [ ] worker03: 32 CPU, 128GB RAM
+- [ ] Each BM server: minimum 2x NIC (e.g. eno1, eno2)
+- [ ] BMC/IPMI access tested
+
+#### Network Requirements
+
 - [ ] Network configured (same VLAN as vSphere)
-- [ ] NIC names confirmed (`ip link` to check eno1/eno2/em1/em2 etc)
-- [ ] Switch LACP support confirmed (yes -> mode 4, no -> mode 1)
-- [ ] NMState YAML prepared (bonding + br-ex configuration)
-- [ ] Base64 encoded NMState YAML
-- [ ] MachineConfig manifests prepared (one per node)
+- [ ] DNS configured for worker01-03 (forward + reverse)
+- [ ] DHCP available on bare metal network (or static IPs planned)
+- [ ] Switch LACP confirmed (you have LACP -> use bonding mode 4)
+- [ ] API VIP + Ingress VIP reachable from bare metal network
+
+#### NIC Bonding Configuration (Required Before Booting)
+
+Each bare metal server needs NIC bonding before joining the cluster. VMware uses vSwitch with uplinks for the same purpose. On bare metal, we use Linux bonding + OVN-Kubernetes br-ex bridge.
+
+**Bonding mode: 802.3ad (LACP) - mode 4** (your Switch supports LACP)
+
+**Step B1: Identify NIC names on each BM server**
+
+```bash
+# Boot from RHCOS Live ISO first (do not install yet)
+# Check available NICs:
+ip link show
+# Note the NIC names (e.g. eno1, eno2, em1, em2, ens160, ens192)
+# Each server may have different NIC names - verify on each one
+```
+
+**Step B2: Create NMState YAML for bonding + br-ex**
+
+Create a file `bond-br-ex.yaml` for each worker node. Example for worker01:
+
+```yaml
+interfaces:
+  # Physical NIC 1
+  - name: eno1
+    type: ethernet
+    state: up
+    ipv4:
+      enabled: false
+    ipv6:
+      enabled: false
+
+  # Physical NIC 2
+  - name: eno2
+    type: ethernet
+    state: up
+    ipv4:
+      enabled: false
+    ipv6:
+      enabled: false
+
+  # Bond interface (LACP mode 4)
+  - name: bond0
+    type: bond
+    state: up
+    copy-mac-from: eno1
+    ipv4:
+      enabled: false
+    link-aggregation:
+      mode: 802.3ad
+      port:
+        - eno1
+        - eno2
+
+  # OVS Bridge (OVN-Kubernetes br-ex)
+  - name: br-ex
+    type: ovs-bridge
+    state: up
+    ipv4:
+      enabled: false
+    bridge:
+      options:
+        mcast-snooping-enable: true
+      port:
+        - name: bond0
+        - name: br-ex
+
+  # OVS Interface (br-ex internal port)
+  - name: br-ex
+    type: ovs-interface
+    state: up
+    copy-mac-from: eno1
+    ipv4:
+      enabled: true
+      dhcp: true
+      auto-route-metric: 48
+```
+
+**Step B3: Base64 encode the NMState YAML**
+
+```bash
+base64 -w 0 bond-br-ex.yaml
+# Copy the output (this is your base64 encoded NMState)
+```
+
+**Step B4: Create MachineConfig for bonding**
+
+Create a MachineConfig YAML for each worker node. Example for worker01:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 10-br-ex-worker01
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,<BASE64_ENCODED_NMSTATE>
+          mode: 0644
+          overwrite: true
+          path: /etc/nmstate/openshift/worker01.yml
+```
+
+Replace `<BASE64_ENCODED_NMSTATE>` with the output from Step B3.
+
+Repeat for worker02 and worker03 (change node name in path and MachineConfig name).
+
+**Step B5: Apply MachineConfig BEFORE booting the BM node**
+
+```bash
+# Apply the MachineConfig to the cluster
+oc apply -f 10-br-ex-worker01.yaml
+oc apply -f 10-br-ex-worker02.yaml
+oc apply -f 10-br-ex-worker03.yaml
+
+# The MachineConfig will be picked up when the new BM node joins the cluster
+```
+
+**Step B6: Verify bonding after node joins**
+
+```bash
+# After the BM node boots and joins the cluster:
+oc debug node/<worker01-bm> -- chroot /host cat /proc/net/bonding/bond0
+# Expected: Bonding Mode: IEEE 802.3ad (LACP), both NICs as slaves
+
+oc debug node/<worker01-bm> -- chroot /host ovs-vsctl show
+# Expected: br-ex bridge with bond0 as port
+```
+
+**Step B7: Test bonding failover**
+
+```bash
+# Unplug one network cable from the BM node
+# Verify bond0 stays active with remaining NIC
+oc debug node/<worker01-bm> -- chroot /host cat /proc/net/bonding/bond0
+# "Active Slave" should change to the remaining NIC
+
+# Replug the cable
+# Verify both NICs are back
+```
+
+**Bonding Mode Reference:**
+
+| Mode | Name | Switch Config Required | Redundancy | Load Balance |
+|------|------|----------------------|------------|--------------|
+| 1 | active-backup | No | Yes | No |
+| 2 | balance-xor | Yes | Yes | Yes (XOR) |
+| 4 | 802.3ad (LACP) | Yes (LACP) | Yes | Yes (best) |
+| 6 | balance-alb | No | Yes | Yes (ALB) |
+
+**Your choice: mode 4 (802.3ad)** because your Switch supports LACP.
+
+#### Network Requirements
+
+- [ ] Network configured (same VLAN as vSphere)
+- [ ] NIC names confirmed on each BM server (`ip link show`)
+- [ ] Switch LACP configured for the ports connected to BM servers
 - [ ] DNS configured for worker01-03
 - [ ] BMC/IPMI access tested
 - [ ] RHCOS ISO downloaded
 - [ ] Ignition config extracted: `oc extract -n openshift-machine-api secret/worker-user-data-managed --keys=userData --to=- > worker.ign`
+
+#### Software Requirements
+
+- [ ] NMState YAML prepared for each worker (bonding + br-ex, see Step B2)
+- [ ] Base64 encoded NMState YAML for each worker (see Step B3)
+- [ ] MachineConfig manifests prepared for each worker (see Step B4)
+- [ ] MachineConfig applied to cluster before BM node boot (see Step B5)
 
 ### Step 1: Add First BM Worker (worker01)
 
