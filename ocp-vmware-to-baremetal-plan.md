@@ -1,10 +1,10 @@
 # OCP VMware to Bare Metal Migration Plan
 
 **Author:** Hermes Agent  
-**Date:** 2026-08-10 (updated 2026-09-14 v4)  
+**Date:** 2026-08-10 (updated 2026-09-14 v5)  
 **Cluster:** lab.devops.local (OCP 4.20.27)  
 **Platform:** BareMetal (platform: none)  
-**Status:** Phase 1a/1b/1c planned, Phase 2 planned  
+**Status:** Part 1 reviewed, Part 2 ready to execute  
 **Red Hat Articles:**
 - https://access.redhat.com/solutions/5020331 (mixed virtual/bare metal support)
 - https://access.redhat.com/solutions/7061543 (Hyper-V support)
@@ -16,17 +16,33 @@
 
 ## Table of Contents
 
+### Part 1: 方案探討
 - [Executive Summary](#executive-summary)
 - [Final Architecture](#final-architecture)
 - [Phase Overview](#phase-overview)
 - [Current Cluster Inventory](#current-cluster-inventory)
+- [Option Analysis](#option-analysis)
+- [Comprehensive Comparison Table](#comprehensive-comparison-table)
+- [Platform Comparison](#platform-comparison)
+- [Why Option 4 Wins (Phase 1) + Phase 2 Extension](#why-option-4-wins-phase-1--phase-2-extension)
+- [Summary Table](#summary-table)
+- [Critical Point: Control Plane Migration](#critical-point-control-plane-migration)
+- [OCP 4.21 Technology Preview 澄清](#ocp-421-technology-preview-澄清)
+- [技術參考：多站點部署要求](#技術參考多站點部署要求)
+- [Future Considerations](#future-considerations)
+
+### Part 2: 方案選定和執行
 - [Phase 1a: Workers VM → BM](#phase-1a-workers-vm--bm)
 - [Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)](#phase-1b-odf-vm--bm-ceph-osd-rolling-replace)
 - [Phase 1c: Monitoring/Other VM → BM](#phase-1c-monitoringother-vm--bm)
-- [Phase 2: Control Plane Migration (Plan B - 逐個替換)](#phase-2-control-plane-migration-plan-b---逐個替換)
+- [Phase 2: Masters VM → BM (Checklist)](#phase-2-masters-vm--bm-plan-b)
+- [Phase 2: Control Plane Migration (Detailed Steps)](#phase-2-control-plane-migration-plan-b---逐個替換)
 - [Bare Metal Network Configuration (NIC Bonding)](#bare-metal-network-configuration-nic-bonding)
-- [OCP 4.21 Technology Preview 澄清](#ocp-421-technology-preview-澄清)
 - [References](#references)
+
+---
+
+# Part 1: 方案探討
 
 ---
 
@@ -41,6 +57,7 @@ This plan migrates an existing OCP 4.20.27 cluster from VMware VMs to bare metal
 - **No rebuild needed** — 65 operators, 66 routes, 108 network policies all preserved
 - **Cluster stays running** throughout the entire migration
 - **Supported:** Red Hat SLA applies (platform: none, mixed VM/BM)
+
 
 ## Final Architecture
 
@@ -70,6 +87,7 @@ This plan migrates an existing OCP 4.20.27 cluster from VMware VMs to bare metal
 └─────────────────────────────────────────────────────────┘
 ```
 
+
 ## Phase Overview
 
 ```
@@ -91,6 +109,7 @@ Total estimated time: 5-8 weeks
 ```
 
 ---
+
 
 ## Critical Point: Control Plane Migration
 
@@ -125,6 +144,7 @@ Total estimated time: 5-8 weeks
 | DNS Operator | MEDIUM | Service discovery broken |
 
 ---
+
 
 ## Current Cluster Inventory
 
@@ -213,6 +233,7 @@ Critical operators:
 - Multiple ingress and egress configurations
 
 ---
+
 
 ## Option Analysis
 
@@ -657,6 +678,7 @@ Your cluster uses `platform: none` (platform-agnostic), so Option 4 is fully sup
 
 ---
 
+
 ## Comprehensive Comparison Table
 
 ```
@@ -777,6 +799,7 @@ VERDICT:           HIGH RISK         HIGH RISK         HIGH RISK         LOW RIS
 ═══════════════════════════════════════════════════════════════════════════════════
 ```
 
+
 ## Platform Comparison
 
 ```
@@ -815,6 +838,7 @@ SUPPORT LEVEL:
   Option 4:  Full Red Hat SLA                  ✓✓✓✓✓✓✓✓✓✓ FULL
 ═══════════════════════════════════════════════════════════════════════════
 ```
+
 
 ## Why Option 4 Wins (Phase 1) + Phase 2 Extension
 
@@ -878,6 +902,7 @@ SUPPORT LEVEL:
 9. Cluster 一直保持運作
 10. SUPPORTED: Red Hat SLA applies
 
+
 ## Summary Table
 
 ```
@@ -900,7 +925,67 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 
 ---
 
-## Migration Checklist
+
+## OCP 4.21 Technology Preview 澄清
+
+### 呢個 TP 功能係咩
+OCP 4.21 新增咗一個功能：喺已安裝嘅 vSphere 集群（用 `platform: vsphere`）上面加入 bare-metal compute machines。
+
+### 你嘅 cluster 唔受影響
+你嘅 cluster 用 `platform: none`，所以：
+- ❌ TP 功能唔關你事
+- ❌ 唔需要關 vSphere CSI（你根本冇裝）
+- ❌ 唔需要理手動 CSR 批准嘅特殊要求
+- ✅ 你嘅混合部署方式一直都係 fully supported
+
+### TP 功能嘅限制（僅供參考）
+- 冇 Machine API 管理
+- 冇 autoscaling
+- 冇 SLA 保障
+- 要關 vSphere CSI（你冇裝，唔影響）
+
+---
+
+
+## 技術參考：多站點部署要求
+
+如果 Phase 2 控制平面轉 BM，要確保符合多站點網絡要求：
+
+### etcd 要求
+- etcd peer RTT < 100ms（唔係普通 network RTT）
+- OCP 4.16+ 可放寬到 500ms（hardware speed tolerance）
+- 必須用高速低延遲存儲（SSD/NVMe）
+
+### 網絡要求
+- L3 直接 IP 連通
+- MTU 一致
+- GSLB 做流量調度（如需要跨站）
+
+### 存儲要求
+- 跨站存儲要考慮所有站嘅可達性
+- Registry 建議用 object storage
+- 層疊存儲（如 ODF）延遲要求 < 10ms RTT
+
+### 工作負載調度
+- 用 topology-aware scheduling（OCP 4.6+）
+- 避免 SPoF（Single Point of Failure）
+
+---
+
+
+## Future Considerations
+
+After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/egress) to bare metal to save 3 more VMware licenses (total 50% savings). But do workers FIRST - lowest risk, highest impact.
+
+---
+
+
+---
+
+# Part 2: 方案選定和執行
+
+---
+
 
 ## Phase 1a: Workers VM → BM
 
@@ -962,6 +1047,7 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 - [ ] ArgoCD sync 正常
 
 ---
+
 
 ## Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)
 
@@ -1151,6 +1237,7 @@ exit
 
 ---
 
+
 ## Phase 1c: Monitoring/Other VM → BM
 
 > **Risk: LOW | Time: 3-5 days | Method: cordon/drain/replace + nodeSelector update**
@@ -1224,6 +1311,7 @@ oc get pods --all-namespaces | grep -v Running | grep -v Completed
 
 ---
 
+
 ## Phase 2: Masters VM → BM (Plan B)
 
 ### Phase 2: Masters VM → BM (Plan B)
@@ -1287,196 +1375,6 @@ oc get pods --all-namespaces | grep -v Running | grep -v Completed
 
 ---
 
-## Future Considerations
-
-After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/egress) to bare metal to save 3 more VMware licenses (total 50% savings). But do workers FIRST - lowest risk, highest impact.
-
----
-
-## Bare Metal Network Configuration (NIC Bonding)
-
-VMware 有 vSwitch 做 NIC teaming，裸機要自己搞 bonding。OCP bare metal 有三個時機配 bonding：
-
-### Bonding 方法選擇
-
-| 時機 | 方法 | 適用場景 | 唔使裝 Operator |
-|------|------|----------|----------------|
-| 安裝時 | Kernel argument `bond=` | 最簡單，initramfs 階段 | ✅ |
-| 安裝時 | NMState YAML + Ignition | Official Recommended，完整控制 | ✅ |
-| 安裝後 | MachineConfig + NMState | 已有 cluster 遷移 | ✅ |
-
-**重要：唔需要裝 Kubernetes NMState Operator。**
-NMState Operator 只能管理 secondary NIC，管唔到 br-ex bridge。
-你嘅 bonding 需求用 MachineConfig 就夠。
-
-### 方法 1: Kernel Argument（安裝時最簡單）
-
-用 RHCOS ISO 啟動嗰陣，喺 kernel command line 加 `bond=` 參數：
-
-```
-# DHCP 模式
-bond=bond0:em1,em2:mode=active-backup
-ip=bond0:dhcp
-nameserver=192.168.89.61
-
-# Static IP 模式
-bond=bond0:em1,em2:mode=active-backup
-ip=192.168.89.50::192.168.89.1:255.255.255.0:worker01.baremetal.bond:bond0:none
-```
-
-- `bond0` = bonding device name
-- `em1,em2` = 物理 NIC（用 `ip link` 查詢實際名稱）
-- `mode=active-backup` = 單活備援（最安全，唔使 switch config）
-- ⚠️ 只控制 initramfs 階段，後續 br-ex 要另外配
-
-### 方法 2: NMState YAML + Ignition（安裝時 Official 方式）
-
-建立 NMState YAML → base64 → 放入 ignition config：
-
-```yaml
-interfaces:
-  # 物理 NIC 1
-  - name: eno1
-    type: ethernet
-    state: up
-    ipv4:
-      enabled: false
-    ipv6:
-      enabled: false
-
-  # 物理 NIC 2
-  - name: eno2
-    type: ethernet
-    state: up
-    ipv4:
-      enabled: false
-    ipv6:
-      enabled: false
-
-  # Bond 介面
-  - name: bond0
-    type: bond
-    state: up
-    copy-mac-from: eno1
-    ipv4:
-      enabled: true
-      dhcp: true
-    link-aggregation:
-      mode: active-backup
-      port:
-        - eno1
-        - eno2
-
-  # OVS Bridge（OVN-Kubernetes 嘅 br-ex）
-  - name: br-ex
-    type: ovs-bridge
-    state: up
-    ipv4:
-      enabled: false
-    bridge:
-      options:
-        mcast-snooping-enable: true
-      port:
-        - name: bond0
-        - name: br-ex
-
-  # OVS Interface（br-ex 嘅 internal port）
-  - name: br-ex
-    type: ovs-interface
-    state: up
-    copy-mac-from: eno1
-    ipv4:
-      enabled: true
-      dhcp: true
-      auto-route-metric: 48
-```
-
-Base64 編碼後放入 ignition：
-
-```bash
-cat br-ex-public.yaml | base64 -w 0
-```
-
-### 方法 3: MachineConfig（安裝後 / 現有 Cluster）
-
-用 MachineConfig 推送 NMState YAML 到 `/etc/nmstate/openshift/<node>.yml`：
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
-metadata:
-  labels:
-    machineconfiguration.openshift.io/role: worker
-  name: 10-br-ex-worker01
-spec:
-  config:
-    ignition:
-      version: 3.2.0
-    storage:
-      files:
-        - contents:
-            source: data:text/plain;charset=utf-8;base64,<base64_encoded_nmstate>
-          mode: 0644
-          overwrite: true
-          path: /etc/nmstate/openshift/worker01.yml
-```
-
-Apply 同 reboot：
-
-```bash
-oc apply -f 10-br-ex-worker01.yaml
-# Node 會自動 reboot 套用配置
-```
-
-### Bonding Mode 選擇
-
-| Mode | Name | Switch Config | Redundancy | Load Balance |
-|------|------|---------------|------------|--------------|
-| 1 | active-backup | 唔需要 | ✅ | ❌ |
-| 2 | balance-xor | 要 | ✅ | ✅ (XOR) |
-| 4 | 802.3ad (LACP) | 要 LACP | ✅ | ✅ (最好) |
-| 6 | balance-alb | 唔需要 | ✅ | ✅ (ALB) |
-
-建議：
-- Switch 冇 LACP → mode 1 (active-backup)
-- Switch 有 LACP → mode 4 (802.3ad)
-
-### 驗證 Bonding
-
-```bash
-# 檢查 bond 狀態
-oc debug node/<node> -- chroot /host cat /proc/net/bonding/bond0
-
-# 檢查 OVS bridge
-oc debug node/<node> -- chroot /host ovs-vsctl show
-
-# 檢查 nmstate
-oc debug node/<node> -- chroot /host nmstatectl show bond0
-```
-
-### Rollback
-
-如果 bonding 配置失敗：
-
-```bash
-# 方法 1: 刪除 NMState 配置
-oc debug node/<node> -- chroot /host rm /etc/nmstate/openshift/<node>.yml
-oc debug node/<node> -- chroot /host systemctl restart NetworkManager
-
-# 方法 2: 刪除 MachineConfig（從其他 working node）
-oc delete machineconfig 10-br-ex-worker01
-# 觸發 reboot 套用
-```
-
-### ⚠️ Bonding 注意事項
-
-1. ** NIC 名稱要正確** — 用 `ip link` 確認實際 NIC 名稱（eno1/eno2/em1/em2/ens160 等）
-2. **MAC 地址** — bond 介面建議用 `copy-mac-from` 複製其中一個 NIC 嘅 MAC
-3. **auto-route-metric: 48** — 確保 br-ex default route 優先級最高
-4. **每台 BM 機都要配** — 唔好只配一台，3 台 worker 都要做
-5. **測試 failover** — 裝機後拔一條網線測試 bonding failover
-
----
 
 ## Phase 2: Control Plane Migration (Plan B - 逐個替換)
 
@@ -1821,69 +1719,190 @@ exit
 
 ---
 
-## OCP 4.21 Technology Preview 澄清
 
-### 呢個 TP 功能係咩
-OCP 4.21 新增咗一個功能：喺已安裝嘅 vSphere 集群（用 `platform: vsphere`）上面加入 bare-metal compute machines。
+## Bare Metal Network Configuration (NIC Bonding)
 
-### 你嘅 cluster 唔受影響
-你嘅 cluster 用 `platform: none`，所以：
-- ❌ TP 功能唔關你事
-- ❌ 唔需要關 vSphere CSI（你根本冇裝）
-- ❌ 唔需要理手動 CSR 批准嘅特殊要求
-- ✅ 你嘅混合部署方式一直都係 fully supported
+VMware 有 vSwitch 做 NIC teaming，裸機要自己搞 bonding。OCP bare metal 有三個時機配 bonding：
 
-### TP 功能嘅限制（僅供參考）
-- 冇 Machine API 管理
-- 冇 autoscaling
-- 冇 SLA 保障
-- 要關 vSphere CSI（你冇裝，唔影響）
+### Bonding 方法選擇
+
+| 時機 | 方法 | 適用場景 | 唔使裝 Operator |
+|------|------|----------|----------------|
+| 安裝時 | Kernel argument `bond=` | 最簡單，initramfs 階段 | ✅ |
+| 安裝時 | NMState YAML + Ignition | Official Recommended，完整控制 | ✅ |
+| 安裝後 | MachineConfig + NMState | 已有 cluster 遷移 | ✅ |
+
+**重要：唔需要裝 Kubernetes NMState Operator。**
+NMState Operator 只能管理 secondary NIC，管唔到 br-ex bridge。
+你嘅 bonding 需求用 MachineConfig 就夠。
+
+### 方法 1: Kernel Argument（安裝時最簡單）
+
+用 RHCOS ISO 啟動嗰陣，喺 kernel command line 加 `bond=` 參數：
+
+```
+# DHCP 模式
+bond=bond0:em1,em2:mode=active-backup
+ip=bond0:dhcp
+nameserver=192.168.89.61
+
+# Static IP 模式
+bond=bond0:em1,em2:mode=active-backup
+ip=192.168.89.50::192.168.89.1:255.255.255.0:worker01.baremetal.bond:bond0:none
+```
+
+- `bond0` = bonding device name
+- `em1,em2` = 物理 NIC（用 `ip link` 查詢實際名稱）
+- `mode=active-backup` = 單活備援（最安全，唔使 switch config）
+- ⚠️ 只控制 initramfs 階段，後續 br-ex 要另外配
+
+### 方法 2: NMState YAML + Ignition（安裝時 Official 方式）
+
+建立 NMState YAML → base64 → 放入 ignition config：
+
+```yaml
+interfaces:
+  # 物理 NIC 1
+  - name: eno1
+    type: ethernet
+    state: up
+    ipv4:
+      enabled: false
+    ipv6:
+      enabled: false
+
+  # 物理 NIC 2
+  - name: eno2
+    type: ethernet
+    state: up
+    ipv4:
+      enabled: false
+    ipv6:
+      enabled: false
+
+  # Bond 介面
+  - name: bond0
+    type: bond
+    state: up
+    copy-mac-from: eno1
+    ipv4:
+      enabled: true
+      dhcp: true
+    link-aggregation:
+      mode: active-backup
+      port:
+        - eno1
+        - eno2
+
+  # OVS Bridge（OVN-Kubernetes 嘅 br-ex）
+  - name: br-ex
+    type: ovs-bridge
+    state: up
+    ipv4:
+      enabled: false
+    bridge:
+      options:
+        mcast-snooping-enable: true
+      port:
+        - name: bond0
+        - name: br-ex
+
+  # OVS Interface（br-ex 嘅 internal port）
+  - name: br-ex
+    type: ovs-interface
+    state: up
+    copy-mac-from: eno1
+    ipv4:
+      enabled: true
+      dhcp: true
+      auto-route-metric: 48
+```
+
+Base64 編碼後放入 ignition：
+
+```bash
+cat br-ex-public.yaml | base64 -w 0
+```
+
+### 方法 3: MachineConfig（安裝後 / 現有 Cluster）
+
+用 MachineConfig 推送 NMState YAML 到 `/etc/nmstate/openshift/<node>.yml`：
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 10-br-ex-worker01
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,<base64_encoded_nmstate>
+          mode: 0644
+          overwrite: true
+          path: /etc/nmstate/openshift/worker01.yml
+```
+
+Apply 同 reboot：
+
+```bash
+oc apply -f 10-br-ex-worker01.yaml
+# Node 會自動 reboot 套用配置
+```
+
+### Bonding Mode 選擇
+
+| Mode | Name | Switch Config | Redundancy | Load Balance |
+|------|------|---------------|------------|--------------|
+| 1 | active-backup | 唔需要 | ✅ | ❌ |
+| 2 | balance-xor | 要 | ✅ | ✅ (XOR) |
+| 4 | 802.3ad (LACP) | 要 LACP | ✅ | ✅ (最好) |
+| 6 | balance-alb | 唔需要 | ✅ | ✅ (ALB) |
+
+建議：
+- Switch 冇 LACP → mode 1 (active-backup)
+- Switch 有 LACP → mode 4 (802.3ad)
+
+### 驗證 Bonding
+
+```bash
+# 檢查 bond 狀態
+oc debug node/<node> -- chroot /host cat /proc/net/bonding/bond0
+
+# 檢查 OVS bridge
+oc debug node/<node> -- chroot /host ovs-vsctl show
+
+# 檢查 nmstate
+oc debug node/<node> -- chroot /host nmstatectl show bond0
+```
+
+### Rollback
+
+如果 bonding 配置失敗：
+
+```bash
+# 方法 1: 刪除 NMState 配置
+oc debug node/<node> -- chroot /host rm /etc/nmstate/openshift/<node>.yml
+oc debug node/<node> -- chroot /host systemctl restart NetworkManager
+
+# 方法 2: 刪除 MachineConfig（從其他 working node）
+oc delete machineconfig 10-br-ex-worker01
+# 觸發 reboot 套用
+```
+
+### ⚠️ Bonding 注意事項
+
+1. ** NIC 名稱要正確** — 用 `ip link` 確認實際 NIC 名稱（eno1/eno2/em1/em2/ens160 等）
+2. **MAC 地址** — bond 介面建議用 `copy-mac-from` 複製其中一個 NIC 嘅 MAC
+3. **auto-route-metric: 48** — 確保 br-ex default route 優先級最高
+4. **每台 BM 機都要配** — 唔好只配一台，3 台 worker 都要做
+5. **測試 failover** — 裝機後拔一條網線測試 bonding failover
 
 ---
 
-## 技術參考：多站點部署要求
 
-如果 Phase 2 控制平面轉 BM，要確保符合多站點網絡要求：
-
-### etcd 要求
-- etcd peer RTT < 100ms（唔係普通 network RTT）
-- OCP 4.16+ 可放寬到 500ms（hardware speed tolerance）
-- 必須用高速低延遲存儲（SSD/NVMe）
-
-### 網絡要求
-- L3 直接 IP 連通
-- MTU 一致
-- GSLB 做流量調度（如需要跨站）
-
-### 存儲要求
-- 跨站存儲要考慮所有站嘅可達性
-- Registry 建議用 object storage
-- 層疊存儲（如 ODF）延遲要求 < 10ms RTT
-
-### 工作負載調度
-- 用 topology-aware scheduling（OCP 4.6+）
-- 避免 SPoF（Single Point of Failure）
-
----
-
-## References
-
-- Red Hat Article (mixed support): https://access.redhat.com/solutions/5020331
-- Red Hat Article (Hyper-V support): https://access.redhat.com/solutions/7061543
-- Red Hat Article (non-tested platforms): https://access.redhat.com/articles/4207611
-- OCP 4.20 etcd docs: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/etcd/
-- OCP 4.20 Backing up and restoring etcd data: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/etcd/backing-up-and-restoring-etcd-data
-- OCP 4.20 Expanding the cluster (bare metal): https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installing_on_bare_metal/bare-metal-expanding-the-cluster
-- OCP 4.20 Managing control plane machines: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/machine_management/managing-control-plane-machines
-- OCP 4.21 Bare Metal Docs: https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/machine_management/managing-user-provisioned-infrastructure-manually#adding-bare-metal-compute-vsphere-user-infra
-- Red Hat KB (multi-site guidance): Guidance for OCP Clusters - Deployments Spanning Multiple Sites
-- OCP Bare Metal Network Customizations (bonding): https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html/installing_on_bare_metal/installing-bare-metal-network-customizations
-- Advanced br-ex Bonding (blog): https://blog.stderr.at/openshift-platform/networking/2026-02-05-advanced-br-ex-with-bonding
-- Kubernetes NMState Operator: https://docs.redhat.com/en/documentation/openshift_container_platform/4.12/html/networking/kubernetes-nmstate
-- Platform-agnostic install: platform: none in install-config.yaml
-- SPLAT-2561, OCPSTRAT-2650 (future GA tracking)
-- OCP 4.20 Replacing a healthy etcd member (scaling up/down): https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/etcd/backing-up-and-restoring-etcd-data#replacing-a-healthy-etcd-member-by-scaling-up-and-scaling-down
-- OKD Replacing an unhealthy etcd member: https://docs.okd.io/latest/backup_and_restore/control_plane_backup_and_restore/replacing-unhealthy-etcd-member.html
-- ODF 4.20 Replacing nodes (bare metal operational): https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/replacing_nodes/openshift_data_foundation_deployed_using_local_storage_devices#replacing-an-operational-node-using-local-storage-devices_bm-upi-operational
-- ODF 4.20 Replacing nodes index: https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/replacing_nodes/index
-- ODF 4.20 Deploying on bare metal: https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/deploying_openshift_data_foundation_using_bare_metal_infrastructure/
