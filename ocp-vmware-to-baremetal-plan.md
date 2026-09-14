@@ -32,11 +32,25 @@
 - [Future Considerations](#future-considerations)
 
 ### Part 2: Solution Selection and Execution
-- [Phase 1a: Workers VM → BM](#phase-1a-workers-vm--bm)
-- [Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)](#phase-1b-odf-vm--bm-ceph-osd-rolling-replace)
-- [Phase 1c: Monitoring/Other VM → BM](#phase-1c-monitoringother-vm--bm)
-- [Phase 2: Masters VM → BM (Checklist)](#phase-2-masters-vm--bm-plan-b)
-- [Phase 2: Control Plane Migration (Detailed Steps)](#phase-2-control-plane-migration-plan-b---One-by-one Replacement)
+- [Phase 1: Workers VM to BM](#phase-1-workers-vm-to-bm)
+  - [Phase 1 Prerequisites (including NIC Bonding)](#phase-1-prerequisites)
+  - [Step 1: Add First BM Worker (worker01)](#step-1-add-first-bm-worker-worker01)
+    - [Option A: Without BMC/IPMI (Manual)](#option-a-without-bmchipmi-manual-installation)
+    - [Option B: With BMC/IPMI (Automated via BareMetalHost)](#option-b-with-bmchipmi-automated-installation-via-baremetalhost)
+  - [Step 2: Migrate Workloads from VM to BM](#step-2-migrate-workloads-from-vm-to-bm)
+  - [Step 3: Repeat for worker02 and worker03](#step-3-repeat-for-worker02-and-worker03)
+  - [Step 4: Cleanup](#step-4-cleanup)
+  - [Phase 1 Acceptance Criteria](#phase-1-acceptance-criteria)
+- [Phase 2: Masters VM to BM (etcd Replacement)](#phase-2-masters-vm-to-bm-etcd-replacement)
+  - [Phase 2 Prerequisites](#phase-2-prerequisites)
+  - [Phase 2 Steps](#phase-2-steps-repeat-3-times-one-node-at-a-time)
+  - [Phase 2 Acceptance Criteria](#phase-2-acceptance-criteria)
+- [Phase 3: Infra to Master BM (Move Infra Components)](#phase-3-infra-to-master-bm-move-infra-components)
+  - [Phase 3 Overview](#phase-3-overview)
+  - [Phase 3 Component Distribution](#phase-3-component-distribution)
+  - [Phase 3 Step-by-Step](#phase-3-step-by-step)
+  - [Phase 3 Acceptance Criteria](#phase-3-acceptance-criteria)
+- [Phase 4: Add 3 More Workers (Optional)](#phase-4-add-3-more-workers-optional)
 - [Bare Metal Network Configuration (NIC Bonding)](#bare-metal-network-configuration-nic-bonding)
 - [References](#references)
 
@@ -1016,7 +1030,7 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 ---
 
 
-## Phase 1: Workers VM → BM
+## Phase 1: Workers VM to BM
 
 > **Risk: LOW | Time: 1-2 weeks | Method: cordon/drain/replace**
 
@@ -1580,7 +1594,7 @@ oc get networkpolicy --all-namespaces | wc -l
 ---
 
 
-## Phase 2: Masters VM -> BM (etcd Replacement)
+## Phase 2: Masters VM to BM (etcd Replacement)
 
 > **Risk: MEDIUM-HIGH | Time: 2-3 weeks | Method: delete Machine triggers etcd auto-remove**
 > **Reference:** OCP 4.20 "Replacing a healthy etcd member by scaling up and scaling down"
@@ -1817,7 +1831,7 @@ oc get alerts --all-namespaces | grep -i "firing"
 
 ---
 
-## Phase 3: Infra -> Master BM (Move Infra Components)
+## Phase 3: Infra to Master BM (Move Infra Components)
 
 > **Risk: LOW-MEDIUM | Time: 1-2 weeks | Method: update nodeSelector/affinity + cordon/drain VM**
 
