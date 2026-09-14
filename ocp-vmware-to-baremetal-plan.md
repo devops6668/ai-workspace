@@ -2033,23 +2033,25 @@ oc get pods -n openshift-monitoring -o wide | grep master
 ### Step B: Move ODF to Master Nodes (Ceph OSD Rolling Replace)
 
 > **Reference:** ODF 4.20 Replacing nodes - Section 2.1.1
+> **Reference:** ODF 4.20 Scaling Storage - Reorganization of ODF OSDs
 
 **Key concept: Add-then-remove.** ODF/Ceph OSD should already be on master BM nodes (from Phase 2). This step removes ODF from the old VMware infra VMs, NOT adding new OSDs.
 
+**If new BM NVMe disk is larger than old VM disk:** ODF does not support heterogeneous disk sizes. ODF will only use the same size as the old disk. After node replacement is complete, use "Add Capacity" in Storage > Data Foundation to utilize the remaining space.
+
 ```
 For each infra VM (infra01-03):
-  1. Verify OSD already running on corresponding master BM node
-  2. Scale down ODF pods on old infra VM
-  3. Update LocalVolumeDiscovery + LocalVolumeSet (remove old VM node)
-  4. Delete old OSD from Ceph
-  5. Cordon + Drain + Delete old infra VM
-  6. Wait for Ceph HEALTH_OK
-  7. Repeat for next infra VM
+  Phase A: Add master node to ODF (label + LocalVolumeDiscovery/Set)
+  Phase B: Scale down ODF pods on old infra VM
+  Phase C: Remove old OSD from Ceph
+  Phase D: Update StorageCluster CR
+  Phase E: Wait for Ceph HEALTH_OK + 24h observation
+  Repeat for next infra VM
 ```
 
 #### Step B1: Move ODF from infra01 to master01
 
-**B1a. Add master01 to ODF (if not already done)**
+**B1a. Add master01 to ODF**
 
 ```bash
 # 1. Label master01 for ODF
@@ -2085,16 +2087,10 @@ exit
 
 **Note:** If master01 already has ODF from Phase 2, skip steps 1-5 and only verify OSD is running.
 
-**B1b. Identify pods on infra01**
+**B1b. Scale down ODF pods on infra01**
 
 ```bash
-oc get pods -n openshift-storage -o wide | grep infra01
-```
-
-**B1c. Scale down ODF pods on infra01**
-
-```bash
-# Scale down OSD
+# Scale down OSD on infra01
 oc scale deployment rook-ceph-osd-0 --replicas=0 -n openshift-storage
 
 # Scale down mon (if mon runs on this node)
@@ -2104,13 +2100,37 @@ oc scale deployment rook-ceph-mon-c --replicas=0 -n openshift-storage
 oc scale deployment --selector=app=rook-ceph-crashcollector,node_name=infra01 --replicas=0 -n openshift-storage
 ```
 
+**B1c. Remove old OSD from Ceph**
+
+```bash
+# Get old OSD ID
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph osd tree
+# Note OSD IDs on infra01
+exit
+
+# Delete any existing ocs-osd-removal-job
+oc delete -n openshift-storage job ocs-osd-removal-job 2>/dev/null || true
+
+# Run OSD removal job (one OSD at a time)
+osd_id_to_remove=<old_osd_id>
+oc scale -n openshift-storage deployment rook-ceph-osd-${osd_id_to_remove} --replicas=0
+oc process -n openshift-storage ocs-osd-removal \
+  -p FAILED_OSD_IDS=${osd_id_to_remove} FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+
+# Monitor removal job
+oc logs -l job-name=ocs-osd-removal-job -n openshift-storage --tail=-1
+oc logs -l job-name=ocs-osd-removal-job -n openshift-storage \
+  --tail=-1 | egrep -i 'completed removal'
+
+# Wait for Ceph HEALTH_OK after each OSD removal
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph status
+# CRITICAL: Do not proceed until HEALTH_OK
+```
+
 **B1d. Update LocalVolumeDiscovery + LocalVolumeSet (remove infra01, keep master01)**
 
 ```bash
-# Find local storage namespace
-local_storage_project=$(oc get csv --all-namespaces | awk '{print $1}' | grep local)
-echo $local_storage_project
-
 # Update LocalVolumeDiscovery (remove infra01)
 oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
 # nodeSelector values:
@@ -2124,28 +2144,7 @@ oc edit -n $local_storage_project localvolumeset localblock
 # Same changes
 ```
 
-**B1e. Delete old OSD from Ceph**
-
-```bash
-# Get old OSD ID
-oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
-ceph osd tree
-# Note OSD IDs on infra01
-exit
-
-# Run OSD removal job
-oc process -n openshift-storage ocs-osd-removal \
-  -p FAILED_OSD_IDS=<old-osd-id1>,<old-osd-id2>,<old-osd-id3> | oc create -f -
-
-# Wait for removal job
-oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage -w
-# Wait for Completed
-
-# Delete removal job
-oc delete job ocs-osd-removal-job -n openshift-storage
-```
-
-**B1f. Clean up released PVs and crashcollector**
+**B1e. Clean up released PVs and crashcollector**
 
 ```bash
 # Delete released PVs
@@ -2156,6 +2155,17 @@ oc delete pv <released-pv>
 oc delete deployment --selector=app=rook-ceph-crashcollector,node_name=infra01 -n openshift-storage
 ```
 
+**B1f. Backup and Update StorageCluster CR**
+
+```bash
+# Backup current StorageCluster
+oc get storagecluster -n openshift-storage -o yaml > storagecluster-backup-$(date +%s).yaml
+
+# Edit StorageCluster to remove old storageDeviceSet entries for infra01
+oc edit storagecluster ocs-storagecluster -n openshift-storage
+# Remove storageDeviceSet entries associated with infra01's old disk
+```
+
 **B1g. Cordon + Drain + Delete infra01**
 
 ```bash
@@ -2164,14 +2174,20 @@ oc adm drain infra01 --force --delete-emptydir-data --ignore-daemonsets
 oc delete node infra01
 ```
 
-**B1h. Wait for Ceph Rebalance**
+**B1h. Final verification for this node**
 
 ```bash
-# May take several hours
-oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
-ceph health
-# Wait for HEALTH_OK
-exit
+# Verify Ceph health
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph status
+
+# Verify OSD topology
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph osd tree
+
+# Verify all ODF pods normal
+oc get pods -n openshift-storage | grep -v Running
+
+# Verify PVC normal
+oc get pvc --all-namespaces | grep -v Bound
 ```
 
 **B1i. Wait for Stability**
@@ -2192,7 +2208,24 @@ Repeat Step B1 for infra02 -> master02.
 
 Repeat Step B1 for infra03 -> master03.
 
----
+#### Step B4: Final ODF Verification (after all 3 nodes replaced)
+
+```bash
+# Verify all OSDs on master nodes
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph osd tree
+# Expected: 3 OSDs, all on master01/02/03
+
+# Verify Ceph status
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph status
+# Expected: HEALTH_OK
+
+# Verify StorageCluster CR is clean
+oc get storagecluster -n openshift-storage -o yaml | grep -A 5 storageDeviceSets
+
+# If new BM NVMe is larger than old VM disk, use Add Capacity now:
+# Storage > Data Foundation > Action Menu > Add Capacity
+# Select the StorageClass backed by the new larger disks
+```
 
 ### Step C: Move Remaining Components to Master Nodes
 
@@ -2834,3 +2867,4 @@ oc get applications -n openshift-gitops
 - ODF 4.20 Replacing nodes (bare metal operational): https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/replacing_nodes/openshift_data_foundation_deployed_using_local_storage_devices#replacing-an-operational-node-using-local-storage-devices_bm-upi-operational
 - ODF 4.20 Replacing nodes index: https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/replacing_nodes/index
 - ODF 4.20 Deploying on bare metal: https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/deploying_openshift_data_foundation_using_bare_metal_infrastructure/
+- ODF 4.20 Scaling Storage (Reorganization of ODF OSDs): https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/scaling_storage/scaling_storage_of_bare_metal_openshift_data_foundation_cluster
