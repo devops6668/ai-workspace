@@ -1314,6 +1314,11 @@ oc get bmh -n openshift-machine-api master-bm-<N> -w
 
 #### Step 3: 安裝 RHCOS 到 BM 機
 ```bash
+# ⚠️ 如果 BMH 已配置 Redfish Virtual Media（BMC/IPMI 可用），
+# RHCOS 安裝由 Bare Metal Operator 自動完成（externallyProvisioned: false），Step 3 可跳過。
+# Step 3 僅適用於無 BMC 支持、需要手動插 USB/ISO 嘅場景。
+
+# 手動安裝方法（僅無 BMC 時使用）：
 # 方法 1: coreos-installer（從 ISO 啟動）
 sudo coreos-installer install /dev/sda \
     --ignition-url=http://<http_server>/master.ign \
@@ -1455,6 +1460,8 @@ oc get secrets -n openshift-etcd | grep <old-vm-master-name> | \
   awk '{print $1}' | xargs oc -n openshift-etcd delete secrets
 
 # 7b. 強制 etcd Operator 重新部署所有 etcd pods（確保配置一致）
+# ⚠️ 強制重新部署期間 etcd 會有滾動重啟，屬正常現象（3 個 members 中 2 個仍然健康，quorum 不受影響）
+# 等待所有 etcd pods 重新變為 Running 後再進行 Step 8 驗證
 oc patch etcd cluster \
   -p='{"spec": {"forceRedeploymentReason": "master-replacement-'"$(date --rfc-3339=ns)"'"}}' \
   --type=merge
