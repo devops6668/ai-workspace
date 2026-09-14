@@ -1,15 +1,15 @@
 # OCP VMware to Bare Metal Migration Plan
 
 **Author:** Hermes Agent  
-**Date:** 2026-08-10 (updated)  
+**Date:** 2026-08-10 (updated 2026-09-14 v4)  
 **Cluster:** lab.devops.local (OCP 4.20.27)  
 **Platform:** BareMetal (platform: none)  
-**Status:** Phase 1 planned, Phase 2 planned  
-**Red Hat Articles:** 
+**Status:** Phase 1a/1b/1c planned, Phase 2 planned  
+**Red Hat Articles:**
 - https://access.redhat.com/solutions/5020331 (mixed virtual/bare metal support)
 - https://access.redhat.com/solutions/7061543 (Hyper-V support)
 - https://access.redhat.com/articles/4207611 (non-tested platforms)
-- https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/machine_management/managing-user-provisioned-infrastructure-manually#adding-bare-metal-compute-vsphere-user-infra
+- https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/replacing_nodes/index (ODF node replacement)
 - Red Hat KB: Guidance for OCP Clusters - Deployments Spanning Multiple Sites
 
 ---
@@ -17,78 +17,77 @@
 ## Table of Contents
 
 - [Executive Summary](#executive-summary)
-- [2-Phase Migration Plan (User's Decision)](#2-phase-migration-plan-users-decision)
-- [Critical Point: Control Plane Migration](#critical-point-control-plane-migration)
+- [Final Architecture](#final-architecture)
+- [Phase Overview](#phase-overview)
 - [Current Cluster Inventory](#current-cluster-inventory)
-- [Option Analysis](#option-analysis)
-  - [Option 1: Full Bare Metal (Rebuild Everything)](#option-1-full-bare-metal-rebuild-everything)
-  - [Option 2: Nutanix (Full Cluster)](#option-2-nutanix-full-cluster)
-  - [Option 3: Microsoft Hyper-V (Full Cluster)](#option-3-microsoft-hyper-v-full-cluster)
-  - [Option 4: VMware (Masters) + Bare Metal (Workers) - RECOMMENDED](#option-4-vmware-masters--bare-metal-workers---recommended)
-- [Comprehensive Comparison Table](#comprehensive-comparison-table)
-- [Platform Comparison](#platform-comparison)
-- [Why Option 4 Wins (Phase 1) + Phase 2 Extension](#why-option-4-wins-phase-1--phase-2-extension)
-- [Summary Table](#summary-table)
-- [Migration Checklist](#migration-checklist)
-  - [Phase 1: Workers VM → BM (Option 4)](#phase-1-workers-vm--bm-option-4)
-  - [Phase 2: Masters VM → BM (Plan B)](#phase-2-masters-vm--bm-plan-b)
-- [Future Considerations](#future-considerations)
-- [Bare Metal Network Configuration (NIC Bonding)](#bare-metal-network-configuration-nic-bonding)
-  - [Bonding 方法選擇](#bonding-方法選擇)
-  - [方法 1: Kernel Argument（安裝時最簡單）](#方法-1-kernel-argument安裝時最簡單)
-  - [方法 2: NMState YAML + Ignition（安裝時 Official 方式）](#方法-2-nmstate-yaml-- ignition安裝時-official-方式)
-  - [方法 3: MachineConfig（安裝後 / 現有 Cluster）](#方法-3-machineconfig安裝後--現有-cluster)
-  - [Bonding Mode 選擇](#bonding-mode-選擇)
-  - [驗證 Bonding](#驗證-bonding)
-  - [Rollback](#rollback)
+- [Phase 1a: Workers VM → BM](#phase-1a-workers-vm--bm)
+- [Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)](#phase-1b-odf-vm--bm-ceph-osd-rolling-replace)
+- [Phase 1c: Monitoring/Other VM → BM](#phase-1c-monitoringother-vm--bm)
 - [Phase 2: Control Plane Migration (Plan B - 逐個替換)](#phase-2-control-plane-migration-plan-b---逐個替換)
+- [Bare Metal Network Configuration (NIC Bonding)](#bare-metal-network-configuration-nic-bonding)
 - [OCP 4.21 Technology Preview 澄清](#ocp-421-technology-preview-澄清)
-- [技術參考：多站點部署要求](#技術參考多站點部署要求)
 - [References](#references)
 
 ---
 
 ## Executive Summary
 
-This plan analyzes 4 options for reducing VMware license costs on an existing OCP cluster running on VMware vSphere. The cluster has 12 nodes, 135 projects, 66 routes, 108 network policies, 65 installed operators, and ODF storage.
+This plan migrates an existing OCP 4.20.27 cluster from VMware VMs to bare metal, preserving all existing configurations, data, and operators.
 
-**Recommendation:** Option 4 (VMware Masters + Bare Metal Workers) is the clear winner.
+> **Updated 2026-09-14 (v4)**: Restructured into 4 phases (1a/1b/1c/2). Phase 1 now covers ALL non-control-plane nodes (workers + ODF + monitoring). Phase 2 covers control plane replacement.
 
-- **Effort:** 1-2 weeks vs 6-10 weeks for full rebuild
-- **Risk:** LOW vs HIGH
-- **VMware savings:** 25% (3 worker licenses saved)
-- **ODF impact:** ZERO (Ceph stays untouched)
-- **Control Plane impact:** ZERO (CP stays on VMware)
-- **Supported:** YES (Red Hat SLA applies)
+**Key Points:**
+- **No data migration needed** — ODF/Ceph stays intact (rolling OSD replacement)
+- **No rebuild needed** — 65 operators, 66 routes, 108 network policies all preserved
+- **Cluster stays running** throughout the entire migration
+- **Supported:** Red Hat SLA applies (platform: none, mixed VM/BM)
 
-## 2-Phase Migration Plan (User's Decision)
+## Final Architecture
 
 ```
-Phase 1: VMware 控制平面 + BM workers  ←  現在計劃（fully supported）
-Phase 2: BM 控制平面 + BM workers     ←  全裸機（方案 B 逐個替換）
+┌─────────────────────────────────────────────────────────┐
+│  VMware (3 VMs) — Phase 2 replaces these               │
+│  master01: etcd, API server, control plane              │
+│  master02: etcd, API server, control plane              │
+│  master03: etcd, API server, control plane              │
+├─────────────────────────────────────────────────────────┤
+│  Bare Metal (9 nodes, all worker role)                  │
+│                                                         │
+│  Phase 1a: Worker VM → BM                               │
+│  worker01 (8CPU/32GB): Apps + TopoLVM                   │
+│  worker02 (8CPU/32GB): Apps + TopoLVM                   │
+│  worker03 (32CPU/128GB): Apps + TopoLVM                 │
+│                                                         │
+│  Phase 1b: ODF VM → BM (Ceph OSD rolling replace)      │
+│  bm-storage01 (14CPU/32GB): Ceph OSD                    │
+│  bm-storage02 (14CPU/32GB): Ceph OSD                    │
+│  bm-storage03 (14CPU/32GB): Ceph OSD                    │
+│                                                         │
+│  Phase 1c: Monitoring/Other VM → BM                     │
+│  bm-infra01 (16CPU/64GB): Monitoring, Quay              │
+│  bm-infra02 (16CPU/64GB): Monitoring, Egress            │
+│  bm-infra03 (16CPU/64GB): Monitoring, Egress            │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Phase 1: VM Masters + BM Workers (Option 4)
-- **Effort:** 1-2 weeks
-- **Risk:** LOW
-- **VMware savings:** 25% (3 worker licenses)
-- **Supported:** YES (platform: none, full Red Hat SLA)
-- **Action:** Replace worker01-03 VMware VMs with bare metal
+## Phase Overview
 
-### Phase 2: BM Masters + BM Workers (Option 1, Plan B)
-- **Effort:** 2-3 weeks (per node, 3 nodes)
-- **Risk:** MEDIUM-HIGH (etcd migration involved)
-- **VMware savings:** Additional 25% (3 master licenses)
-- **Supported:** YES (platform: none, full Red Hat SLA)
-- **Method:** Plan B - 逐個替換 control plane nodes
-- **Advantage:** 冇需要重新安裝所有野（ODF、operators、routes 等全部保留）
-- **Key:** etcd snapshot before each swap, one node at a time
-
-### Phase 2 追加 VMware savings: 50% total
 ```
-Phase 1: 12 → 9 VMware licenses (-25%)
-Phase 2: 9 → 6 VMware licenses  (-25%)
-Total:   50% VMware license savings
+Phase 1a: Worker VM → BM (3 BM nodes)
+  Risk: LOW | Time: 1-2 weeks | Method: cordon/drain/replace
+
+Phase 1b: ODF VM → BM (3 BM nodes, Ceph OSD rolling replace)
+  Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove (先加後減)
+  Reference: ODF 4.20 Replacing nodes (Section 2.1.1)
+
+Phase 1c: Monitoring/Other VM → BM (3 BM nodes)
+  Risk: LOW | Time: 3-5 days | Method: cordon/drain/replace + nodeSelector update
+
+Phase 2: Master VM → BM (3 BM nodes, etcd replacement)
+  Risk: MEDIUM-HIGH | Time: 2-3 weeks | Method: delete Machine triggers etcd auto-remove
+  Reference: OCP 4.20 "Replacing a healthy etcd member by scaling up and scaling down"
+
+Total estimated time: 5-8 weeks
 ```
 
 ---
@@ -903,7 +902,9 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 
 ## Migration Checklist
 
-### Phase 1: Workers VM → BM (Option 4)
+## Phase 1a: Workers VM → BM
+
+> **Risk: LOW | Time: 1-2 weeks | Method: cordon/drain/replace**
 
 #### Day 1-2: Prepare
 - [ ] Provision 3 bare metal servers (match worker specs)
@@ -919,7 +920,7 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 - [ ] Configure DNS for worker01-03
 - [ ] Test BMC/IPMI access
 - [ ] Download RHCOS ISO
-- [ ] Extract Ignition config
+- [ ] Extract Ignition config: `oc extract -n openshift-machine-api secret/worker-user-data-managed --keys=userData --to=- > worker.ign`
 
 #### Day 3-4: Add Bare Metal Workers
 - [ ] Boot worker01 with RHCOS ISO + worker.ign
@@ -943,7 +944,6 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 #### Day 8: Cleanup & Validate
 - [ ] Remove VMware worker VMs from vCenter
 - [ ] Decommission 3 VMware hosts
-- [ ] Adjust VMware license
 - [ ] 測試 bonding failover（拔一條網線測試）
 - [ ] 確認所有 BM worker bonding 正常
 - [ ] Verify ODF health
@@ -953,7 +953,278 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 - [ ] Verify ArgoCD sync
 - [ ] Monitor for issues
 
+#### Phase 1a 驗收標準
+- [ ] 3 部 BM worker Ready
+- [ ] 所有 apps 正常運行
+- [ ] TopoLVM 正常
+- [ ] 所有 routes 正常
+- [ ] 所有 network policies 正常
+- [ ] ArgoCD sync 正常
+
 ---
+
+## Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)
+
+> **Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove (先加後減)**
+> **Reference:** ODF 4.20 Replacing nodes — Section 2.1.1 "Replacing an operational node on bare metal user-provisioned infrastructure"
+
+### Phase 1b 概念
+
+```
+每次加一個新 BM storage node → 等 Ceph rebalance → 減舊 VM storage node
+重複 3 次（infra01→bm-storage01, infra02→bm-storage02, infra03→bm-storage03）
+```
+
+**先加後減嘅原因：** Ceph 隨時都有足夠 OSD，data 可用性不受影響。
+
+### Phase 1b 前置條件
+- [ ] 3 台 BM storage 機已準備好（14 CPU, 32GB + 本地 SSD for Ceph OSD）
+- [ ] 新 BM 嘅磁盤 size/type 同舊 infra 一致
+- [ ] RHCOS ISO 已準備好
+- [ ] Network 連通（同 VLAN）
+- [ ] DNS 正反向解析正常
+- [ ] BMC/IPMI 可用
+- [ ] Phase 1a 已完成（3 部 BM worker 已就位）
+- [ ] Ceph cluster 健康（`ceph health` = HEALTH_OK）
+
+### 每個 storage node 嘅替換步驟（重複 3 次，一次只做一個）
+
+#### Step A1: 加新 BM storage node 到集群
+```bash
+# 安裝 RHCOS + 加入集群做 worker
+# 批准 CSR
+# 等 node Ready
+```
+
+#### Step A2: 加 ODF label 到新 node
+```bash
+oc label node <new-bm-storage> cluster.ocs.openshift.io/openshift-storage=""
+```
+
+#### Step A3: 更新 LocalVolumeDiscovery + LocalVolumeSet（加入新 node，保留舊 node）
+```bash
+# 找到 local storage namespace
+local_storage_project=$(oc get csv --all-namespaces | awk '{print $1}' | grep local)
+echo $local_storage_project
+
+# 更新 LocalVolumeDiscovery（加入新 node，保留所有舊 node）
+oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
+# nodeSelector values 加入新 node：
+#   - infra01.example.com  # 保留
+#   - infra02.example.com  # 保留
+#   - infra03.example.com  # 保留
+#   - <new-bm-storage>     # 加入
+
+# 更新 LocalVolumeSet（同樣加入新 node）
+oc get -n $local_storage_project localvolumeset
+oc edit -n $local_storage_project localvolumeset localblock
+# 同樣加入新 node
+```
+
+#### Step A4: 確認新 PV 出現
+```bash
+oc get pv | grep localblock | grep Available
+# 預期：有新嘅 Available PV
+```
+
+#### Step A5: 等 Ceph Rebalance + 健康
+```bash
+# ⚠️ 等 Ceph 健康先繼續（可能需要數小時）
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph health
+# 等 HEALTH_OK
+ceph osd tree
+exit
+```
+
+#### Step B1: Scale down 舊 node 上嘅 ODF pods
+```bash
+# 識別舊 node 上嘅 ODF pods
+oc get pods -n openshift-storage -o wide | grep -i <old-infra>
+
+# Scale down mon（如果 mon 跑喺呢個 node）
+oc scale deployment rook-ceph-mon-c --replicas=0 -n openshift-storage
+
+# Scale down OSD
+oc scale deployment rook-ceph-osd-0 --replicas=0 -n openshift-storage
+
+# Scale down crashcollector
+oc scale deployment --selector=app=rook-ceph-crashcollector,node_name=<old-infra> --replicas=0 -n openshift-storage
+```
+
+#### Step B2: 刪除舊 OSD
+```bash
+# 確認舊 OSD ID
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph osd tree
+# 記低舊 infra 上嘅 OSD ID
+exit
+
+# 執行 OSD removal job
+oc process -n openshift-storage ocs-osd-removal \
+  -p FAILED_OSD_IDS=<old-osd-id1>,<old-osd-id2>,<old-osd-id3> | oc create -f -
+
+# 等 removal job 完成
+oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage -w
+# 等 Completed
+
+# 刪除 removal job
+oc delete job ocs-osd-removal-job -n openshift-storage
+```
+
+#### Step B3: 更新 LocalVolumeDiscovery + LocalVolumeSet（移除舊 node）
+```bash
+# 更新 LocalVolumeDiscovery（移除舊 node）
+oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
+# nodeSelector values 移除舊 node
+
+# 更新 LocalVolumeSet（同樣移除舊 node）
+oc edit -n $local_storage_project localvolumeset localblock
+# 同樣移除舊 node
+```
+
+#### Step B4: Cordon + Drain + 刪除舊 VM
+```bash
+oc adm cordon <old-infra>
+oc adm drain <old-infra> --force --delete-emptydir-data --ignore-daemonsets
+oc delete node <old-infra>
+```
+
+#### Step B5: 驗證
+```bash
+# 確認 Ceph 健康
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph health
+ceph osd tree
+exit
+
+# 確認所有 ODF pods 正常
+oc get pods -n openshift-storage | grep -v Running
+
+# 確認 CSI driver 正常
+oc get pods -n openshift-storage | grep csi
+
+# 確認 StorageClass 正常
+oc get sc
+
+# 確認 PVC 正常
+oc get pvc --all-namespaces | grep -v Bound
+```
+
+#### Step B6: 等 Ceph Rebalance 完成
+```bash
+# ⚠️ 可能需要數小時
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph -s
+# 等 "recovery" 或 "backfill" 完成
+# 等 ceph health 變 HEALTH_OK
+exit
+```
+
+#### Step B7: 等待穩定
+```
+⚠️ 等至少 24 小時觀察穩定性，確認：
+- Ceph HEALTH_OK
+- 所有 PVC Bound
+- 所有 ODF pods Running
+- 應用程序正常
+```
+
+#### 重複 Step A1-B7（infra02→bm-storage02, infra03→bm-storage03）
+
+### Phase 1b 驗收標準
+- [ ] 3 部 BM storage node Ready
+- [ ] Ceph HEALTH_OK
+- [ ] 所有 OSD 正常
+- [ ] 所有 PVC Bound
+- [ ] 所有 StorageClass 正常
+- [ ] 所有 ODF pods Running
+- [ ] 所有 CSI driver pods Running
+
+### Phase 1b ⚠️ 注意事項
+1. **每次只換一個 node** — 唔好同時替換多個
+2. **等 Ceph HEALTH_OK** — 每次替換後等 rebalance 完成先做下一個
+3. **磁盤規格一致** — 新 BM 嘅磁盤 size/type 要同舊 infra 一樣
+4. **Rebalance 時間** — 取決於數據量，可能數小時
+5. **I/O 影響** — Rebalance 期間會有大量 background I/O
+6. **Scale down 順序** — 先 scale down ODF pods，再 cordon/drain
+
+---
+
+## Phase 1c: Monitoring/Other VM → BM
+
+> **Risk: LOW | Time: 3-5 days | Method: cordon/drain/replace + nodeSelector update**
+
+### Phase 1c 概念
+
+```
+infra04-06 (VM) → bm-infra01-03 (BM)
+Monitoring, Quay, Egress 等組件跟住 nodeSelector 移動
+```
+
+### Phase 1c 前置條件
+- [ ] 3 台 BM infra 機已準備好（16 CPU, 64GB）
+- [ ] RHCOS ISO 已準備好
+- [ ] Network 連通（同 VLAN）
+- [ ] Phase 1a + 1b 已完成
+
+### 每個 infra node 嘅替換步驟（重複 3 次）
+
+#### Step C1: 加新 BM infra node 到集群
+```bash
+# 安裝 RHCOS + 加入集群做 worker
+# 批准 CSR
+# 等 node Ready
+```
+
+#### Step C2: 更新 monitoring/quoter/egress 嘅 nodeSelector
+```bash
+# 更新 OpenShift Monitoring stack 嘅 nodeSelector
+# 將 Prometheus/Alertmanager/Thanos 嘅 nodeSelector 改為指向新 BM node
+
+# 更新 Quay 嘅 nodeSelector（如有）
+
+# 更新 Egress 嘅 nodeSelector（如有）
+```
+
+#### Step C3: Cordon + Drain 舊 VM
+```bash
+oc adm cordon <old-infra>
+oc adm drain <old-infra> --force --delete-emptydir-data --ignore-daemonsets
+```
+
+#### Step C4: 刪除舊 VM
+```bash
+oc delete node <old-infra>
+# 從 vCenter 刪除 VM
+```
+
+#### Step C5: 驗證
+```bash
+# 確認 monitoring stack 正常
+oc get pods -n openshift-monitoring
+
+# 確認 Quay 正常（如有）
+
+# 確認 Egress 正常
+
+# 確認所有 pods 正常
+oc get pods --all-namespaces | grep -v Running | grep -v Completed
+```
+
+#### 重複 Step C1-C5（infra05→bm-infra02, infra06→bm-infra03）
+
+### Phase 1c 驗收標準
+- [ ] 3 部 BM infra node Ready
+- [ ] Monitoring stack 正常（Prometheus, Alertmanager, Thanos）
+- [ ] Quay 正常
+- [ ] Egress 正常
+- [ ] 所有 pods 正常
+- [ ] 所有 alerts 正常
+
+---
+
+## Phase 2: Masters VM → BM (Plan B)
 
 ### Phase 2: Masters VM → BM (Plan B)
 
@@ -1613,3 +1884,6 @@ OCP 4.21 新增咗一個功能：喺已安裝嘅 vSphere 集群（用 `platform:
 - SPLAT-2561, OCPSTRAT-2650 (future GA tracking)
 - OCP 4.20 Replacing a healthy etcd member (scaling up/down): https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/etcd/backing-up-and-restoring-etcd-data#replacing-a-healthy-etcd-member-by-scaling-up-and-scaling-down
 - OKD Replacing an unhealthy etcd member: https://docs.okd.io/latest/backup_and_restore/control_plane_backup_and_restore/replacing-unhealthy-etcd-member.html
+- ODF 4.20 Replacing nodes (bare metal operational): https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/replacing_nodes/openshift_data_foundation_deployed_using_local_storage_devices#replacing-an-operational-node-using-local-storage-devices_bm-upi-operational
+- ODF 4.20 Replacing nodes index: https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/replacing_nodes/index
+- ODF 4.20 Deploying on bare metal: https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.20/html/deploying_openshift_data_foundation_using_bare_metal_infrastructure/
