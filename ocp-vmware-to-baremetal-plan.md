@@ -1912,6 +1912,7 @@ Step D: Cordon + Drain + Delete infra01-06 VMs
 - [ ] All Cluster Operators normal
 - [ ] 6 VMware infra VMs still running (infra01-06)
 - [ ] Ceph cluster healthy (`ceph health` = HEALTH_OK)
+- [ ] master01/02/03 not yet added to ODF (will be done in Step B)
 
 ### Phase 3 Component Distribution
 
@@ -2043,19 +2044,41 @@ For each infra VM (infra01-03):
 
 #### Step B1: Move ODF from infra01 to master01
 
-**B1a. Verify OSD already on master01**
+**B1a. Add master01 to ODF (if not already done)**
 
 ```bash
-# Confirm Ceph OSD pods running on master01 (from Phase 2)
-oc get pods -n openshift-storage -o wide | grep master01 | grep osd
+# 1. Label master01 for ODF
+oc label node master01-bm cluster.ocs.openshift.io/openshift-storage=""
+
+# 2. Update LocalVolumeDiscovery (add master01)
+local_storage_project=$(oc get csv --all-namespaces | awk '{print $1}' | grep local)
+oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
+# Add master01-bm to nodeSelector values:
+#   - infra01.example.com  # keep (will remove later)
+#   - infra02.example.com  # keep
+#   - infra03.example.com  # keep
+#   - master01-bm          # add
+
+# 3. Update LocalVolumeSet (add master01)
+oc edit -n $local_storage_project localvolumeset localblock
+# Same: add master01-bm to nodeSelector values
+
+# 4. Wait for new localblock PV to appear
+oc get pv | grep localblock | grep Available
+# Expected: new Available PV present
+
+# 5. Wait for new OSD pod to run on master01
+oc get pods -o wide -n openshift-storage | grep master01 | grep osd
 # Expected: OSD pods running on master01
 
-# Confirm Ceph health
+# 6. Wait for Ceph HEALTH_OK (new OSD must be healthy before removing old)
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph health
-ceph osd status
+# Wait for HEALTH_OK
 exit
 ```
+
+**Note:** If master01 already has ODF from Phase 2, skip steps 1-5 and only verify OSD is running.
 
 **B1b. Identify pods on infra01**
 
