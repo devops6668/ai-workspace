@@ -1002,61 +1002,210 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 
 > **Risk: LOW | Time: 1-2 weeks | Method: cordon/drain/replace**
 
-#### Day 1-2: Prepare
-- [ ] Provision 3 bare metal servers (match worker specs)
+### Overview
+
+Replace worker01-03 VMware VMs with bare metal nodes. Each worker is replaced one at a time using cordon -> drain -> add BM -> remove VM workflow.
+
+### Phase 1 Prerequisites
+
+- [ ] 3 bare metal servers provisioned (match worker specs)
 - [ ] worker01: 8 CPU, 32GB RAM
 - [ ] worker02: 8 CPU, 32GB RAM
 - [ ] worker03: 32 CPU, 128GB RAM
-- [ ] Configure network (same VLAN as vSphere)
-- [ ] confirm NIC names (`ip link` to query eno1/eno2/em1/em2 etc.)
-- [ ] confirm Switch LACP support (has → mode 4, no → mode 1)
-- [ ] Prepare NMState YAML (bonding + br-ex configure)
-- [ ] Base64 encode NMState YAML
-- [ ] Prepare MachineConfig manifest (one per node)
-- [ ] Configure DNS for worker01-03
-- [ ] Test BMC/IPMI access
-- [ ] Download RHCOS ISO
-- [ ] Extract Ignition config: `oc extract -n openshift-machine-api secret/worker-user-data-managed --keys=userData --to=- > worker.ign`
+- [ ] Network configured (same VLAN as vSphere)
+- [ ] NIC names confirmed (`ip link` to check eno1/eno2/em1/em2 etc)
+- [ ] Switch LACP support confirmed (yes -> mode 4, no -> mode 1)
+- [ ] NMState YAML prepared (bonding + br-ex configuration)
+- [ ] Base64 encoded NMState YAML
+- [ ] MachineConfig manifests prepared (one per node)
+- [ ] DNS configured for worker01-03
+- [ ] BMC/IPMI access tested
+- [ ] RHCOS ISO downloaded
+- [ ] Ignition config extracted: `oc extract -n openshift-machine-api secret/worker-user-data-managed --keys=userData --to=- > worker.ign`
 
-#### Day 3-4: Add Bare Metal Workers
-- [ ] Boot worker01 with RHCOS ISO + worker.ign
-- [ ] verify bonding status (`cat /proc/net/bonding/bond0`)
-- [ ] verify OVS bridge (`ovs-vsctl show`)
-- [ ] Verify node Ready
-- [ ] Boot worker02 with RHCOS ISO + worker.ign
-- [ ] verify bonding status
-- [ ] verify OVS bridge
-- [ ] Verify node Ready
-- [ ] Boot worker03 with RHCOS ISO + worker.ign
-- [ ] verify bonding status
-- [ ] verify OVS bridge
-- [ ] Verify node Ready
+### Step 1: Add First BM Worker (worker01)
 
-#### Day 5-7: Migrate Workloads
-- [ ] worker01: cordon → drain → verify → shutdown VM
-- [ ] worker02: cordon → drain → verify → shutdown VM
-- [ ] worker03: cordon → drain → verify → shutdown VM
+#### Step 1a: Boot BM node with RHCOS
 
-#### Day 8: Cleanup & Validate
-- [ ] Remove VMware worker VMs from vCenter
-- [ ] Decommission 3 VMware hosts
-- [ ] test bonding failover (unplug a network cable to test)
-- [ ] confirm all BM worker bonding normal
-- [ ] Verify ODF health
-- [ ] Verify monitoring
-- [ ] Verify all 66 routes
-- [ ] Verify all egress paths
-- [ ] Verify ArgoCD sync
-- [ ] Monitor for issues
+```bash
+# Boot from RHCOS ISO
+# At boot prompt, provide Ignition URL:
+sudo coreos-installer install /dev/sda \\
+    --ignition-url=http://<http_server>/worker.ign \\
+    --insecure-ignition \\
+    --platform=metal
+```
 
-#### Phase 1a Acceptance Criteria
+If BMH is configured with Redfish Virtual Media, RHCOS installation is handled automatically by Bare Metal Operator -- skip manual coreos-installer.
+
+#### Step 1b: Verify bonding status
+
+```bash
+# On the new BM node (via console or SSH after boot):
+cat /proc/net/bonding/bond0
+# Verify both NICs are slave interfaces
+# Verify bond0 is active
+# Expected output:
+# Bonding Mode: fault-tolerance (active-backup)
+# Slave Interface: eno1
+# Slave Interface: eno2
+# Active Slave: eno1
+```
+
+#### Step 1c: Verify OVS bridge
+
+```bash
+# On the new BM node:
+ovs-vsctl show
+# Verify br-ex bridge exists and bond0 is a port
+# Expected: br-ex bridge with bond0 as port, with IP address assigned
+```
+
+#### Step 1d: Approve CSR
+
+```bash
+# On a machine with oc access:
+oc get csr | grep Pending
+
+# Approve all pending CSRs for the new node
+oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\\n"}}{{end}}{{end}}' | \\
+  xargs oc adm certificate approve
+
+# Verify CSR approved
+oc get csr | grep Approved
+```
+
+#### Step 1e: Verify node Ready
+
+```bash
+oc get nodes -w
+# Wait for worker01-bm to show Ready status
+# Expected:
+# NAME           STATUS   ROLES    AGE   VERSION
+# worker01-bm    Ready    worker   5m    v1.30.x
+```
+
+#### Step 1f: Verify bonding failover (optional but recommended)
+
+```bash
+# Unplug one network cable from the BM node
+# Verify bond0 stays active with remaining NIC
+cat /proc/net/bonding/bond0
+# Verify "Active Slave" changed to the remaining NIC
+
+# Replug the cable
+# Verify both NICs are back as slaves
+```
+
+### Step 2: Migrate Workloads from VM to BM
+
+#### Step 2a: Cordon old VM worker
+
+```bash
+oc cordon worker01
+# Expected: node/worker01 cordoned
+```
+
+#### Step 2b: Drain old VM worker
+
+```bash
+oc drain worker01 --ignore-daemonsets --delete-emptydir-data
+# This will evict all pods from the old VM worker
+# Pods will be rescheduled to the new BM node and other workers
+```
+
+#### Step 2c: Verify workloads migrated
+
+```bash
+# Verify pods are now running on the new BM node
+oc get pods -o wide --all-namespaces | grep worker01-bm
+
+# Verify all applications are healthy
+oc get pods --all-namespaces | grep -v Running | grep -v Completed
+# Expected: no output (all pods Running or Completed)
+
+# Verify no pods left on old VM worker
+oc get pods -o wide --all-namespaces | grep worker01
+# Expected: no output
+```
+
+#### Step 2d: Shutdown old VM
+
+```bash
+# From vCenter or via SSH to the VM:
+ssh root@worker01
+shutdown -h now
+
+# Or from vCenter: Power Off the VM
+```
+
+### Step 3: Repeat for worker02 and worker03
+
+Repeat Steps 1-2 for worker02 and worker03.
+
+**Important:** Wait for worker01 to be fully verified before starting worker02.
+
+```
+worker01: Boot -> Verify bonding -> Verify OVS -> Approve CSR -> Verify Ready -> Cordon VM -> Drain VM -> Verify -> Shutdown VM
+worker02: Boot -> Verify bonding -> Verify OVS -> Approve CSR -> Verify Ready -> Cordon VM -> Drain VM -> Verify -> Shutdown VM
+worker03: Boot -> Verify bonding -> Verify OVS -> Approve CSR -> Verify Ready -> Cordon VM -> Drain VM -> Verify -> Shutdown VM
+```
+
+### Step 4: Cleanup
+
+#### Step 4a: Remove old VMs from vCenter
+
+```bash
+# Delete worker01, worker02, worker03 VMs from vCenter
+# Right-click VM -> Delete from Disk
+```
+
+#### Step 4b: Decommission VMware hosts (if no longer needed)
+
+#### Step 4c: Verify all services
+
+```bash
+# Verify ODF health
+oc get pods -n openshift-storage | grep -v Running
+# Expected: no output
+
+# Verify monitoring
+oc get pods -n openshift-monitoring | grep -v Running
+# Expected: no output
+
+# Verify all routes
+oc get routes --all-namespaces | wc -l
+# Expected: 66
+
+# Verify ArgoCD sync
+oc get applications -n openshift-gitops
+# Expected: all apps Synced/Healthy
+
+# Verify egress paths
+# Test from application pods to external endpoints
+oc debug <app-pod> -- curl -s http://external-endpoint
+
+# Verify TopoLVM
+oc get pods -n openshift-storage | grep topolvm
+# Expected: topolvm pods Running
+
+# Verify network policies
+oc get networkpolicy --all-namespaces | wc -l
+# Expected: 108
+```
+
+### Phase 1 Acceptance Criteria
+
 - [ ] 3 BM workers Ready
 - [ ] All apps running normally
-- [ ] TopoLVM normal
-- [ ] All routes normal
-- [ ] All network policies normal
+- [ ] TopoLVM working on new BM nodes
+- [ ] All 66 routes normal
+- [ ] All 108 network policies normal
 - [ ] ArgoCD sync normal
-
+- [ ] ODF health normal
+- [ ] Monitoring normal
+- [ ] Bonding working on all 3 BM workers
+- [ ] No pods left on old VM workers
 ---
 
 
