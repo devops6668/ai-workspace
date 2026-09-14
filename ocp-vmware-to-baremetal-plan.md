@@ -957,9 +957,9 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 
 ### Phase 2: Masters VM → BM (Plan B)
 
-> **Updated 2026-09-14**: 修正 etcd member management 命令，符合 OCP 4.20 官方文檔。
-> 舊版 Plan 用 `oc patch etcdcluster` 命令，呢個 API 唔存在。
-> 正確做法係 etcd Operator 自動管理，加上 `etcdctl` 手動移除。
+> **Updated 2026-09-14 (v3)**: 根據專家審查 + OCP 4.20 官方文檔修正。
+> - 核心修正：刪除 Machine 對象觸發 etcd Operator 自動移除 member，唔再手動 `etcdctl member remove`
+> - 新增：etcd Secrets 清理、HAProxy 後端更新、etcd Quorum Guard 說明、CSR 監控腳本、穩定性驗收標準
 
 #### 前置條件
 - [ ] 3 台 BM 機已準備好（12 CPU, 64GB each）
@@ -968,25 +968,32 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 - [ ] DNS 正反向解析正常
 - [ ] BMC/IPMI 可用
 - [ ] HTTP server 準備好放 ignition config（master.ign）
+- [ ] HAProxy 後端已配置好（可以添加新 BM node IP）
+- [ ] 確認冇 ControlPlaneMachineSet：`oc get controlplanemachineset -n openshift-machine-api`
 - [ ] 提取 master Ignition config：`oc extract -n openshift-machine-api secret/master-user-data-managed --keys=userData --to=- > master.ign`
+- [ ] 開一個終端跑 CSR 監控：`watch -n 5 'oc get csr | grep Pending'`
 
 #### 每個 Node（重複 3 次，一次只做一個）
 
 ##### Node 1: master01 → BM
-- [ ] 備份 etcd snapshot
-- [ ] 準備 BareMetalHost + Secret + Machine object
+- [ ] 前置確認：集群健康、etcd 健康（3 members）、冇 CPMS
+- [ ] 備份 etcd（用官方 backup 腳本）
+- [ ] 準備 BMC Secret + BareMetalHost + Machine object
+- [ ] 等 BMH 狀態變 available
 - [ ] 安裝 RHCOS 到 BM 機
-- [ ] 加入集群（批准 CSR）
+- [ ] 批准 CSR（手動或自動腳本）
 - [ ] 等 node Ready
 - [ ] 等 etcd Operator 自動加入新 member（約 5-10 分鐘）
-- [ ] 確認 etcd cluster 有 4 個 members
-- [ ] 確認新 etcd member 健康
+- [ ] 確認 etcd cluster 有 4 個 members 且全部 healthy
+- [ ] 更新 HAProxy：添加新 BM node IP 到後端
 - [ ] Cordon + drain 舊 VM
-- [ ] 手動移除舊 etcd member（etcdctl member remove）
+- [ ] 刪除舊 Machine 對象（觸發 etcd Operator 自動移除 member）
+- [ ] 刪除舊 BMH 對象
+- [ ] 清理舊節點嘅 etcd TLS secrets
 - [ ] 強制 etcd 重新部署
-- [ ] 刪除舊 Machine + BareMetalHost + Node
-- [ ] 驗證 etcd cluster 健康（3 members）
-- [ ] 驗證所有 operator 正常
+- [ ] 更新 HAProxy：移除舊 VM IP
+- [ ] 更新 DNS（如需要）
+- [ ] 驗證：etcd 3 members healthy、所有 CO 正常、所有 node Ready
 - [ ] 等待 24 小時觀察穩定性
 
 ##### Node 2: master02 → BM
@@ -1202,14 +1209,19 @@ oc delete machineconfig 10-br-ex-worker01
 
 ## Phase 2: Control Plane Migration (Plan B - 逐個替換)
 
-> **Updated 2026-09-14**: 根據 OCP 4.20 官方文檔修正 etcd member management 步驟。
-> 舊版 Plan 用 `oc patch etcdcluster` 命令 — 呢個 API 唔存在。
-> 正確做法：etcd Operator 自動加入新 member + `etcdctl` 手動移除舊 member。
+> **Updated 2026-09-14 (v3)**: 根據專家審查 + OCP 4.20 官方文檔修正。
+> - 核心修正：刪除 Machine 對象觸發 etcd Operator 自動移除 member，唔再手動 `etcdctl member remove`
+> - 新增：etcd Secrets 清理、HAProxy 後端更新、etcd Quorum Guard 說明、CSR 監控腳本、穩定性驗收標準
+> - 參考：OCP 4.20 "Replacing a healthy etcd member by scaling up and scaling down"
 
 ### 為什麼揀方案 B
 - 冇需要重新安裝 ODF、operators、routes、ArgoCD 等全部嘢
 - Cluster 一直保持運作
 - 只係逐個 etcd member 替換
+- 核心方法對應 Red Hat 官方文檔："Replacing a healthy etcd member by scaling up and scaling down"
+
+### etcd Quorum Guard 說明
+etcd Quorum Guard 係一個保護機制，會阻止 drain 操作如果 drain 會導致 etcd quorum 喺 4 個 CP 節點過渡期間，Quorum Guard 允許 drain 舊節點（因為仍有足夠 etcd members）。但如果你嘗試喺只有 3 個 CP 節點時強制 drain 其中一個，Quorum Guard 會阻止。呢個係保護機制，唔係錯誤。
 
 ### 前置條件
 - 3 台 BM 機已準備好（同 master 規格：12 CPU, 64GB）
@@ -1218,24 +1230,48 @@ oc delete machineconfig 10-br-ex-worker01
 - DNS 正反向解析正常
 - BMC/IPMI 可用
 - HTTP server 準備好放 master Ignition config
+- HAProxy 後端已配置好（可以添加新 BM node IP）
+- 確認冇 ControlPlaneMachineSet（`platform: none` 集群通常冇）
 
 ### 提取 Master Ignition Config
 ```bash
+# 注意：如果集群安裝後有 MachineConfig 更新，master-user-data-managed 會自動更新
+# 確保喺添加新節點前提取最新版本
 oc extract -n openshift-machine-api secret/master-user-data-managed \
   --keys=userData --to=- > master.ign
 ```
 
+### CSR 監控腳本（整個 Phase 2 期間開一個終端監控）
+```bash
+watch -n 5 'oc get csr | grep Pending'
+```
+
 ### 步驟（每次只替換一個，重複 3 次）
 
-#### Step 1: 備份 etcd（每次操作前必做！）
+#### Step 1: 前置確認 + 備份 etcd（每次操作前必做！）
 ```bash
-# 備份 etcd snapshot
-oc exec -n openshift-etcd etcd-<current-node> -- \
-  etcdctl snapshot save /tmp/etcd-snapshot-$(date +%Y%m%d).db
+# 1a. 確認集群健康
+oc get nodes
+oc get co | grep -v "True.*False.*False"
 
-# 驗證 snapshot
-oc exec -n openshift-etcd etcd-<current-node> -- \
-  etcdctl snapshot status /tmp/etcd-snapshot-$(date +%Y%m%d).db --write-out=table
+# 1b. 確認 etcd 健康（3 個 members，全部 healthy）
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl member list -w table
+etcdctl endpoint health --cluster
+exit
+
+# 1c. 確認冇 ControlPlaneMachineSet
+oc get controlplanemachineset -n openshift-machine-api
+
+# 1d. 備份 etcd（用官方 backup 腳本）
+oc exec -n openshift-etcd \
+  $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
+  /usr/local/bin/cluster-backup.sh /home/core/assets/backup
+
+# 1e. 驗證 backup
+oc exec -n openshift-etcd \
+  $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
+  ls -la /home/core/assets/backup/
 ```
 
 #### Step 2: 準備 BareMetalHost + Machine object
@@ -1245,31 +1281,35 @@ cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: Secret
 metadata:
-  name: control-plane-<num>-bmc-secret
+  name: master-bm-<N>-bmc-secret
   namespace: openshift-machine-api
-data:
-  username: <base64_of_uid>
-  password: <base64_of_pwd>
 type: Opaque
----
+data:
+  username: $(echo -n '<bmc_user>' | base64)
+  password: $(echo -n '<bmc_pass>' | base64)
+EOF
+
+# 建立 BareMetalHost
+cat <<EOF | oc apply -f -
 apiVersion: metal3.io/v1alpha1
 kind: BareMetalHost
 metadata:
-  name: control-plane-<num>
+  name: master-bm-<N>
   namespace: openshift-machine-api
 spec:
   automatedCleaningMode: disabled
   bmc:
-    address: <protocol>://<bmc_ip>
-    credentialsName: control-plane-<num>-bmc-secret
-  bootMACAddress: <NIC1_mac_address>
+    address: idrac-virtualmedia://<bmc_ip>/redfish/v1/Systems/System.Embedded.1
+    credentialsName: master-bm-<N>-bmc-secret
+    disableCertificateVerification: true
+  bootMACAddress: "<NIC_MAC>"
   bootMode: UEFI
   externallyProvisioned: false
   online: true
 EOF
 
 # 等 BMH 狀態變 available
-oc get bmh -n openshift-machine-api control-plane-<num> -w
+oc get bmh -n openshift-machine-api master-bm-<N> -w
 ```
 
 #### Step 3: 安裝 RHCOS 到 BM 機
@@ -1292,12 +1332,12 @@ apiVersion: machine.openshift.io/v1beta1
 kind: Machine
 metadata:
   annotations:
-    metal3.io/BareMetalHost: openshift-machine-api/control-plane-<num>
+    metal3.io/BareMetalHost: openshift-machine-api/master-bm-<N>
   labels:
-    machine.openshift.io/cluster-api-cluster: control-plane-<num>
+    machine.openshift.io/cluster-api-cluster: <cluster-name>
     machine.openshift.io/cluster-api-machine-role: master
     machine.openshift.io/cluster-api-machine-type: master
-  name: control-plane-<num>
+  name: <cluster-name>-master-bm-<N>
   namespace: openshift-machine-api
 spec:
   metadata: {}
@@ -1319,22 +1359,35 @@ EOF
 ```
 
 ```bash
-# 批准 CSR
-oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs oc adm certificate approve
+# 批准 CSR（新節點會產生 client + server 兩個 CSR）
+# 方法 1: 手動批准
+oc get csr | grep Pending
+oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | \
+  xargs oc adm certificate approve
+
+# 方法 2: 自動批准腳本（整個 Phase 2 期間開一個終端跑）
+while true; do
+  PENDING=$(oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}')
+  if [ -n "$PENDING" ]; then
+    echo "$PENDING" | xargs oc adm certificate approve
+    echo "$(date): Approved CSRs"
+  fi
+  sleep 10
+done
 
 # 等 node Ready
 oc get nodes -w
-# 等 control-plane-<num> 狀態變 Ready
+# 等 <cluster-name>-master-bm-<N> 狀態變 Ready
 ```
 
-#### Step 5: 等 etcd Operator 自動加入新 member
+#### Step 5: 等 etcd Operator 自動加入新 member + HAProxy 更新
 ```bash
 # ⚠️ 重要：etcd Operator 會自動偵測新嘅 control plane node
 # 並自動將新 node 加入 etcd cluster，唔需要手動 patch 或 etcdctl member add
 # 大約等 5-10 分鐘
 
-# 確認 etcd cluster 有 4 個 members（暫時 4 個係正常）
-oc rsh -n openshift-etcd etcd-<new-node>
+# ⚠️ 關鍵等待步驟：必須看到 4 個 members 且全部 "is healthy" 才能繼續
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
 etcdctl member list -w table
 
 # 預期輸出：4 個 members（3 舊 + 1 新）
@@ -1349,95 +1402,143 @@ etcdctl member list -w table
 
 # 驗證所有 etcd members 健康
 etcdctl endpoint health --cluster
+# 預期：4 個 endpoints 全部 "is healthy"
+exit
+
+# 更新 HAProxy：將新 BM 節點 IP 加入後端
+# 在 HAProxy 配置中添加新節點到：
+#   backend openshift-api-server
+#   backend machine-config-server
+# 然後重載 HAProxy
+# systemctl reload haproxy
 ```
 
-#### Step 6: 移除舊 VM — 先移除 etcd member
+#### Step 6: 移除舊 VM — Cordon + Drain + 刪除 Machine（觸發自動 etcd 移除）
 ```bash
-# ⚠️ 重要：先移除 etcd member，再 cordon/drain，最後刪 node
+# ⚠️ 重要：先 cordon/drain，再刪除 Machine 對象
+# 刪除 Machine 會觸發 etcd Operator 自動移除對應嘅 etcd member
+# 唔需要手動執行 etcdctl member remove
 
-# 6a. 確認舊 VM 嘅 etcd member ID
-oc rsh -n openshift-etcd etcd-<new-node>
-etcdctl member list -w table
-# 記低舊 VM 嘅 member ID
+# 6a. Cordon 舊 VM 節點（停止新 Pod 調度）
+oc adm cordon <old-vm-master-name>
 
-# 6b. 移除舊 etcd member
-etcdctl member remove <old_member_id>
+# 6b. Drain 舊 VM 節點（驅逐 Pod）
+# 注意：etcd Quorum Guard 在 4 個 CP 節點時允許此操作
+oc adm drain <old-vm-master-name> \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --force
 
-# 6c. 確認 etcd cluster 回到 3 個 members
-etcdctl member list -w table
-etcdctl endpoint health --cluster
+# 6c. 刪除舊 VM 嘅 Machine 對象
+# ⚠️ 呢一步會觸發 etcd Operator 自動移除對應嘅 etcd member
+# 唔需要手動執行 etcdctl member remove
+oc delete machine <old-vm-machine-name> -n openshift-machine-api
+
+# 6d. 刪除舊 VM 嘅 BMH 對象
+oc delete bmh <old-vm-bmh-name> -n openshift-machine-api
+
+# 6e. 等待 Node 對象自動刪除（Machine 刪除後自動觸發）
+oc get nodes -w
 ```
 
-#### Step 7: 強制 etcd 重新部署
+#### Step 7: 清理 etcd Secrets + 強制重新部署 + 驗證
 ```bash
-# 強制 etcd Operator 重新部署所有 etcd pods（確保配置一致）
-oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'$(date --rfc-3339=ns)'"}}' --type=merge
+# 7a. 清理舊節點嘅 etcd TLS secrets
+# 移除舊節點後，清理其對應嘅 etcd secrets，避免 etcd Operator 出現告警
+oc get secrets -n openshift-etcd | grep <old-vm-master-name>
+# 應該看到：
+# etcd-peer-<old-master-name>
+# etcd-serving-<old-master-name>
+# etcd-serving-metrics-<old-master-name>
+
+oc get secrets -n openshift-etcd | grep <old-vm-master-name> | \
+  awk '{print $1}' | xargs oc -n openshift-etcd delete secrets
+
+# 7b. 強制 etcd Operator 重新部署所有 etcd pods（確保配置一致）
+oc patch etcd cluster \
+  -p='{"spec": {"forceRedeploymentReason": "master-replacement-'"$(date --rfc-3339=ns)"'"}}' \
+  --type=merge
 
 # 等 etcd pods 重新部署完成
 oc get pods -n openshift-etcd -w
 # 等所有 etcd pods 變 Running
+
+# 7c. 更新 HAProxy：從後端移除舊 VM 節點 IP
+# 在 HAProxy 配置中移除舊節點
+# 然後重載 HAProxy
+# systemctl reload haproxy
+
+# 7d. 更新 DNS（如需要）
 ```
 
-#### Step 8: Cordon + Drain 舊 VM + 刪除
+#### Step 8: 最終驗證（穩定性驗收標準）
 ```bash
-# 8a. Cordon + drain 舊 VM
-oc cordon <old-vm-node>
-oc drain <old-vm-node> --ignore-daemonsets --delete-emptydir-data
-
-# 8b. 刪除舊 Machine + BareMetalHost
-oc delete machine -n openshift-machine-api <old-machine-name>
-oc delete bmh -n openshift-machine-api <old-host-name>
-
-# 8c. 刪除舊 node
-oc delete node <old-vm-node>
-```
-
-#### Step 9: 驗證
-```bash
-# etcd 健康（3 個 members）
-oc rsh -n openshift-etcd etcd-<new-node>
+# etcd 健康（3 個 members，全部 healthy）
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
 etcdctl member list -w table
 etcdctl endpoint health --cluster
+exit
 
 # 所有 node Ready
 oc get nodes
 
+# 所有 Cluster Operators 正常（Available=True, Progressing=False, Degraded=False）
+oc get co | grep -v "True.*False.*False"
+
 # ODF 健康
 oc get pods -n openshift-storage
 
-# 所有 operator 正常
-oc get co
+# 監控系統無告警
+oc get alerts --all-namespaces | grep -i "firing"
 
-# 強制重新部署 etcd（確保所有 pods 一致）
-oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "verify-'$(date --rfc-3339=ns)'"}}' --type=merge
+# 應用程序正常
+oc get routes --all-namespaces | wc -l
 ```
+
+**⚠️ 穩定性驗收：以下所有條件都要滿足先做下一個 node：**
+- [ ] etcd cluster 3 個 members 全部 healthy
+- [ ] 所有 Cluster Operators Available=True, Progressing=False, Degraded=False
+- [ ] 所有 nodes Ready
+- [ ] 監控系統無新告警（特別係 etcd 相關）
+- [ ] 至少等 24 小時觀察穩定性
 
 ### ⚠️ Phase 2 風險提醒
 1. **一次只換一個** — 等 etcd 完全穩定先做下一個（建議等 24 小時）
 2. **3 個 control plane = 容錯 1 個** — 換緊嗰陣如果另一個掛咗，cluster 會出問題
 3. **安排 maintenance window** — 換嘅時候 etcd 會有短暫唔穩定（force redeployment 時）
-4. **CSR 批准** — 要自己 implement 自動批准機制（冇 Machine API）
-5. **時間估算** — 每個 node 大約 2-3 小時（唔包括等待穩定時間）
-6. **Load Balancer** — 如果 API VIP 用 HAProxy，要更新後端指向新 BM node IP
+4. **CSR 批准** — 用自動批准腳本（整個 Phase 2 期間開一個終端跑）
+5. **時間估算** — 每個 node 大約 2-3 小時（唔包括 24 小時穩定觀察）
+6. **HAProxy 更新** — 必須喺步驟中及時更新，否則 API 請求會路由到已移除嘅舊 VM
 7. **DNS** — 要更新 control plane node 嘅 DNS 記錄
+8. **etcd Quorum Guard** — 4 個 CP 節點時允許 drain，3 個時會阻止（保護機制）
+9. **etcd Secrets** — 舊節點嘅 TLS secrets 要清理，避免 Operator 告警
 
 ### Phase 2 命令快速參考
 ```bash
+# 確認集群健康
+oc get nodes && oc get co | grep -v "True.*False.*False"
+
 # 備份
-oc exec -n openshift-etcd etcd-<node> -- etcdctl snapshot save /tmp/etcd-$(date +%Y%m%d).db
+oc exec -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
+  /usr/local/bin/cluster-backup.sh /home/core/assets/backup
 
 # 加入（自動）— etcd Operator 自動處理，唔需要手動命令
 
-# 移除
-oc rsh -n openshift-etcd etcd-<node>
-etcdctl member list -w table          # 睇 member ID
-etcdctl member remove <member_id>     # 移除
+# 移除（自動）— 刪除 Machine 對象觸發
+oc delete machine <old-machine-name> -n openshift-machine-api
+
+# 清理 etcd secrets
+oc get secrets -n openshift-etcd | grep <old-name> | awk '{print $1}' | \
+  xargs oc -n openshift-etcd delete secrets
 
 # 強制重新部署
 oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'$(date --rfc-3339=ns)'"}}' --type=merge
 
 # 驗證
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl member list -w table
 etcdctl endpoint health --cluster
+exit
 ```
 
 ---
@@ -1492,6 +1593,10 @@ OCP 4.21 新增咗一個功能：喺已安裝嘅 vSphere 集群（用 `platform:
 - Red Hat Article (mixed support): https://access.redhat.com/solutions/5020331
 - Red Hat Article (Hyper-V support): https://access.redhat.com/solutions/7061543
 - Red Hat Article (non-tested platforms): https://access.redhat.com/articles/4207611
+- OCP 4.20 etcd docs: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/etcd/
+- OCP 4.20 Backing up and restoring etcd data: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/etcd/backing-up-and-restoring-etcd-data
+- OCP 4.20 Expanding the cluster (bare metal): https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installing_on_bare_metal/bare-metal-expanding-the-cluster
+- OCP 4.20 Managing control plane machines: https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/machine_management/managing-control-plane-machines
 - OCP 4.21 Bare Metal Docs: https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/machine_management/managing-user-provisioned-infrastructure-manually#adding-bare-metal-compute-vsphere-user-infra
 - Red Hat KB (multi-site guidance): Guidance for OCP Clusters - Deployments Spanning Multiple Sites
 - OCP Bare Metal Network Customizations (bonding): https://docs.redhat.com/en/documentation/openshift_container_platform/4.17/html/installing_on_bare_metal/installing-bare-metal-network-customizations
@@ -1499,3 +1604,5 @@ OCP 4.21 新增咗一個功能：喺已安裝嘅 vSphere 集群（用 `platform:
 - Kubernetes NMState Operator: https://docs.redhat.com/en/documentation/openshift_container_platform/4.12/html/networking/kubernetes-nmstate
 - Platform-agnostic install: platform: none in install-config.yaml
 - SPLAT-2561, OCPSTRAT-2650 (future GA tracking)
+- OCP 4.20 Replacing a healthy etcd member (scaling up/down): https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/etcd/backing-up-and-restoring-etcd-data#replacing-a-healthy-etcd-member-by-scaling-up-and-scaling-down
+- OKD Replacing an unhealthy etcd member: https://docs.okd.io/latest/backup_and_restore/control_plane_backup_and_restore/replacing-unhealthy-etcd-member.html
