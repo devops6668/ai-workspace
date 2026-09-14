@@ -16,7 +16,7 @@
 
 ## Table of Contents
 
-### Part 1: 方案探討
+### Part 1: Solution Analysis
 - [Executive Summary](#executive-summary)
 - [Final Architecture](#final-architecture)
 - [Phase Overview](#phase-overview)
@@ -27,22 +27,22 @@
 - [Why Option 4 Wins (Phase 1) + Phase 2 Extension](#why-option-4-wins-phase-1--phase-2-extension)
 - [Summary Table](#summary-table)
 - [Critical Point: Control Plane Migration](#critical-point-control-plane-migration)
-- [OCP 4.21 Technology Preview 澄清](#ocp-421-technology-preview-澄清)
-- [技術參考：多站點部署要求](#技術參考多站點部署要求)
+- [OCP 4.21 Technology Preview Clarification](#ocp-421-technology-preview-clarification)
+- [Technical Reference: Multi-site Deployment Requirements](#technical-reference-multi-site-deployment-requirements)
 - [Future Considerations](#future-considerations)
 
-### Part 2: 方案選定和執行
+### Part 2: Solution Selection and Execution
 - [Phase 1a: Workers VM → BM](#phase-1a-workers-vm--bm)
 - [Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)](#phase-1b-odf-vm--bm-ceph-osd-rolling-replace)
 - [Phase 1c: Monitoring/Other VM → BM](#phase-1c-monitoringother-vm--bm)
 - [Phase 2: Masters VM → BM (Checklist)](#phase-2-masters-vm--bm-plan-b)
-- [Phase 2: Control Plane Migration (Detailed Steps)](#phase-2-control-plane-migration-plan-b---逐個替換)
+- [Phase 2: Control Plane Migration (Detailed Steps)](#phase-2-control-plane-migration-plan-b---One-by-one Replacement)
 - [Bare Metal Network Configuration (NIC Bonding)](#bare-metal-network-configuration-nic-bonding)
 - [References](#references)
 
 ---
 
-# Part 1: 方案探討
+# Part 1: Solution Analysis
 
 ---
 
@@ -95,7 +95,7 @@ Phase 1a: Worker VM → BM (3 BM nodes)
   Risk: LOW | Time: 1-2 weeks | Method: cordon/drain/replace
 
 Phase 1b: ODF VM → BM (3 BM nodes, Ceph OSD rolling replace)
-  Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove (先加後減)
+  Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove (add first, remove later)
   Reference: ODF 4.20 Replacing nodes (Section 2.1.1)
 
 Phase 1c: Monitoring/Other VM → BM (3 BM nodes)
@@ -860,25 +860,25 @@ SUPPORT LEVEL:
 ║  - VMware savings: Additional 25%                                      ║
 ║  - ODF impact: ZERO (Ceph stays untouched)                            ║
 ║  - Supported: YES (platform: none, full RH SLA)                       ║
-║  - Method: 逐個替換 control plane nodes                               ║
+║  - Method: One-by-one Replacement control plane nodes                               ║
 ║                                                                        ║
 ║  Total VMware savings: 50% (12 → 6 licenses)                         ║
 ║                                                                        ║
-║  Phase 1 理由：                                                        ║
-║  - 最低風險開始                                                         ║
-║  - 只需要 3 台 BM 機                                                  ║
-║  - Worker 替換最簡單（冇 etcd）                                        ║
+║  Phase 1 Reason:                                                       ║
+║  - Lowest risk start                                                   ║
+║  - Only need 3 BM servers                                              ║
+║  - Worker replacement is simplest (no etcd)                            ║
 ║                                                                        ║
-║  Phase 2 理由：                                                        ║
-║  - 省更多 VMware license                                                ║
-║  - 方案 B 冇需要重新安裝全部嘢                                          ║
-║  - ODF、operators、routes 全部保留                                     ║
-║  - 只係逐個 etcd member 替換                                          ║
+║  Phase 2 Reason:                                                       ║
+║  - Save more VMware licenses                                           ║
+║  - Plan B doesn't require reinstalling everything                      ║
+║  - ODF, operators, routes all preserved                                ║
+║  - Only etcd member replacement one at a time                                          ║
 ║                                                                        ║
 ╚════════════════════════════════════════════════════════════════════════╝
 ```
 
-### Phase 1 優勢（同之前一樣）
+### Phase 1 Advantages (same as before)
 1. ZERO ODF rebuild
 2. ZERO monitoring rebuild
 3. ZERO operator reconfiguration
@@ -890,16 +890,16 @@ SUPPORT LEVEL:
 9. RISK: LOW vs HIGH
 10. SUPPORTED: Red Hat SLA applies
 
-### Phase 2 優勢（方案 B）
-1. ZERO ODF rebuild（Ceph stays untouched）
+### Phase 2 Advantages (Plan B)
+1. ZERO ODF rebuild (Ceph stays untouched)
 2. ZERO monitoring rebuild
 3. ZERO operator reconfiguration
 4. ZERO GitOps changes
 5. ZERO pipeline changes
 6. ZERO ingress changes
 7. ZERO egress changes
-8. 只係 etcd member 替換
-9. Cluster 一直保持運作
+8. Only etcd member replacement
+9. Cluster remains operational throughout
 10. SUPPORTED: Red Hat SLA applies
 
 
@@ -926,49 +926,49 @@ OPTION    TIME      RISK      EFFORT    SAVINGS   VERDICT
 ---
 
 
-## OCP 4.21 Technology Preview 澄清
+## OCP 4.21 Technology Preview Clarification
 
-### 呢個 TP 功能係咩
-OCP 4.21 新增咗一個功能：喺已安裝嘅 vSphere 集群（用 `platform: vsphere`）上面加入 bare-metal compute machines。
+### What is this TP Feature
+OCP 4.21 added a new feature: adding bare-metal compute machines to an already-installed vSphere cluster (using `platform: vsphere`).
 
-### 你嘅 cluster 唔受影響
-你嘅 cluster 用 `platform: none`，所以：
-- ❌ TP 功能唔關你事
-- ❌ 唔需要關 vSphere CSI（你根本冇裝）
-- ❌ 唔需要理手動 CSR 批准嘅特殊要求
-- ✅ 你嘅混合部署方式一直都係 fully supported
+### Your Cluster is Not Affected
+Your cluster uses `platform: none`, so:
+- ❌ The TP feature doesn't apply to you
+- ❌ You don't need to turn off vSphere CSI (you don't have it installed)
+- ❌ You don't need to handle the manual CSR approval requirements
+- ✅ Your hybrid deployment method has always been fully supported
 
-### TP 功能嘅限制（僅供參考）
-- 冇 Machine API 管理
-- 冇 autoscaling
-- 冇 SLA 保障
-- 要關 vSphere CSI（你冇裝，唔影響）
+### TP Feature Limitations (for reference only)
+- No Machine API management
+- No autoscaling
+- No SLA guarantee
+- Requires turning off vSphere CSI (you don't have it, so not affected)
 
 ---
 
 
-## 技術參考：多站點部署要求
+## Technical Reference: Multi-site Deployment Requirements
 
-如果 Phase 2 控制平面轉 BM，要確保符合多站點網絡要求：
+If Phase 2 control plane migrates to BM, you need to ensure compliance with multi-site network requirements:
 
-### etcd 要求
-- etcd peer RTT < 100ms（唔係普通 network RTT）
-- OCP 4.16+ 可放寬到 500ms（hardware speed tolerance）
-- 必須用高速低延遲存儲（SSD/NVMe）
+### etcd Requirements
+- etcd peer RTT < 100ms (not regular network RTT)
+- OCP 4.16+ can relax to 500ms (hardware speed tolerance)
+- Must use high-speed, low-latency storage (SSD/NVMe)
 
-### 網絡要求
-- L3 直接 IP 連通
-- MTU 一致
-- GSLB 做流量調度（如需要跨站）
+### Network Requirements
+- L3 direct IP connectivity
+- MTU consistency
+- GSLB for traffic scheduling (if cross-site is needed)
 
-### 存儲要求
-- 跨站存儲要考慮所有站嘅可達性
-- Registry 建議用 object storage
-- 層疊存儲（如 ODF）延遲要求 < 10ms RTT
+### Storage Requirements
+- Cross-site storage must consider reachability across all sites
+- Registry should use object storage
+- Layered storage (like ODF) requires latency < 10ms RTT
 
-### 工作負載調度
-- 用 topology-aware scheduling（OCP 4.6+）
-- 避免 SPoF（Single Point of Failure）
+### Workload Scheduling
+- Use topology-aware scheduling (OCP 4.6+)
+- Avoid SPoF (Single Point of Failure)
 
 ---
 
@@ -982,7 +982,7 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 
 ---
 
-# Part 2: 方案選定和執行
+# Part 2: Solution Selection and Execution
 
 ---
 
@@ -997,11 +997,11 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 - [ ] worker02: 8 CPU, 32GB RAM
 - [ ] worker03: 32 CPU, 128GB RAM
 - [ ] Configure network (same VLAN as vSphere)
-- [ ] 確認 NIC 名稱（`ip link` 查詢 eno1/eno2/em1/em2 等）
-- [ ] 確認 Switch LACP support（有 → mode 4，冇 → mode 1）
-- [ ] 準備 NMState YAML（bonding + br-ex 配置）
-- [ ] Base64 編碼 NMState YAML
-- [ ] 準備 MachineConfig manifest（每個 node 一份）
+- [ ] confirm NIC names (`ip link` to query eno1/eno2/em1/em2 etc.)
+- [ ] confirm Switch LACP support (has → mode 4, no → mode 1)
+- [ ] Prepare NMState YAML (bonding + br-ex configure)
+- [ ] Base64 encode NMState YAML
+- [ ] Prepare MachineConfig manifest (one per node)
 - [ ] Configure DNS for worker01-03
 - [ ] Test BMC/IPMI access
 - [ ] Download RHCOS ISO
@@ -1009,16 +1009,16 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 
 #### Day 3-4: Add Bare Metal Workers
 - [ ] Boot worker01 with RHCOS ISO + worker.ign
-- [ ] 驗證 bonding 狀態（`cat /proc/net/bonding/bond0`）
-- [ ] 驗證 OVS bridge（`ovs-vsctl show`）
+- [ ] verify bonding status (`cat /proc/net/bonding/bond0`)
+- [ ] verify OVS bridge (`ovs-vsctl show`)
 - [ ] Verify node Ready
 - [ ] Boot worker02 with RHCOS ISO + worker.ign
-- [ ] 驗證 bonding 狀態
-- [ ] 驗證 OVS bridge
+- [ ] verify bonding status
+- [ ] verify OVS bridge
 - [ ] Verify node Ready
 - [ ] Boot worker03 with RHCOS ISO + worker.ign
-- [ ] 驗證 bonding 狀態
-- [ ] 驗證 OVS bridge
+- [ ] verify bonding status
+- [ ] verify OVS bridge
 - [ ] Verify node Ready
 
 #### Day 5-7: Migrate Workloads
@@ -1029,8 +1029,8 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 #### Day 8: Cleanup & Validate
 - [ ] Remove VMware worker VMs from vCenter
 - [ ] Decommission 3 VMware hosts
-- [ ] 測試 bonding failover（拔一條網線測試）
-- [ ] 確認所有 BM worker bonding 正常
+- [ ] test bonding failover (unplug a network cable to test)
+- [ ] confirm all BM worker bonding normal
 - [ ] Verify ODF health
 - [ ] Verify monitoring
 - [ ] Verify all 66 routes
@@ -1038,97 +1038,97 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 - [ ] Verify ArgoCD sync
 - [ ] Monitor for issues
 
-#### Phase 1a 驗收標準
-- [ ] 3 部 BM worker Ready
-- [ ] 所有 apps 正常運行
-- [ ] TopoLVM 正常
-- [ ] 所有 routes 正常
-- [ ] 所有 network policies 正常
-- [ ] ArgoCD sync 正常
+#### Phase 1a Acceptance Criteria
+- [ ] 3 BM workers Ready
+- [ ] All apps running normally
+- [ ] TopoLVM normal
+- [ ] All routes normal
+- [ ] All network policies normal
+- [ ] ArgoCD sync normal
 
 ---
 
 
 ## Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)
 
-> **Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove (先加後減)**
+> **Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove (add first, remove later)**
 > **Reference:** ODF 4.20 Replacing nodes — Section 2.1.1 "Replacing an operational node on bare metal user-provisioned infrastructure"
 
-### Phase 1b 概念
+### Phase 1b Concept
 
 ```
-每次加一個新 BM storage node → 等 Ceph rebalance → 減舊 VM storage node
-重複 3 次（infra01→bm-storage01, infra02→bm-storage02, infra03→bm-storage03）
+Each time add a new BM storage node → wait for Ceph rebalance → remove old VM storage node
+Repeat 3 times (infra01→bm-storage01, infra02→bm-storage02, infra03→bm-storage03)
 ```
 
-**先加後減嘅原因：** Ceph 隨時都有足夠 OSD，data 可用性不受影響。
+**Reason for add-then-remove:** Ceph always has sufficient OSDs, data availability is not affected.
 
-### Phase 1b 前置條件
-- [ ] 3 台 BM storage 機已準備好（14 CPU, 32GB + 本地 SSD for Ceph OSD）
-- [ ] 新 BM 嘅磁盤 size/type 同舊 infra 一致
-- [ ] RHCOS ISO 已準備好
-- [ ] Network 連通（同 VLAN）
-- [ ] DNS 正反向解析正常
-- [ ] BMC/IPMI 可用
-- [ ] Phase 1a 已完成（3 部 BM worker 已就位）
-- [ ] Ceph cluster 健康（`ceph health` = HEALTH_OK）
+### Phase 1b Prerequisites
+- [ ] 3 BM storage servers ready (14 CPU, 32GB + local SSD for Ceph OSD)
+- [ ] New BM disk size/type matches old infra
+- [ ] RHCOS ISO ready
+- [ ] Network connectivity (same VLAN)
+- [ ] DNS forward/reverse resolution normal
+- [ ] BMC/IPMI accessible
+- [ ] Phase 1a completed (3 BM workers in place)
+- [ ] Ceph cluster healthy (`ceph health` = HEALTH_OK)
 
-### 每個 storage node 嘅替換步驟（重複 3 次，一次只做一個）
+### Each Storage Node Replacement Steps (repeat 3 times, one at a time)
 
-#### Step A1: 加新 BM storage node 到集群
+#### Step A1: Add new BM storage node to cluster
 ```bash
-# 安裝 RHCOS + 加入集群做 worker
-# 批准 CSR
-# 等 node Ready
+# install RHCOS + join cluster as worker
+# approve CSR
+# wait for node Ready
 ```
 
-#### Step A2: 加 ODF label 到新 node
+#### Step A2: Add ODF label to new node
 ```bash
 oc label node <new-bm-storage> cluster.ocs.openshift.io/openshift-storage=""
 ```
 
-#### Step A3: 更新 LocalVolumeDiscovery + LocalVolumeSet（加入新 node，保留舊 node）
+#### Step A3: Update LocalVolumeDiscovery + LocalVolumeSet (add new node, keep old node)
 ```bash
-# 找到 local storage namespace
+# find local storage namespace
 local_storage_project=$(oc get csv --all-namespaces | awk '{print $1}' | grep local)
 echo $local_storage_project
 
-# 更新 LocalVolumeDiscovery（加入新 node，保留所有舊 node）
+# update LocalVolumeDiscovery (add new node, keep all old nodes)
 oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
-# nodeSelector values 加入新 node：
-#   - infra01.example.com  # 保留
-#   - infra02.example.com  # 保留
-#   - infra03.example.com  # 保留
-#   - <new-bm-storage>     # 加入
+# nodeSelector values add new node:
+#   - infra01.example.com  # keep
+#   - infra02.example.com  # keep
+#   - infra03.example.com  # keep
+#   - <new-bm-storage>     # add
 
-# 更新 LocalVolumeSet（同樣加入新 node）
+# update LocalVolumeSet (also add new node)
 oc get -n $local_storage_project localvolumeset
 oc edit -n $local_storage_project localvolumeset localblock
-# 同樣加入新 node
+# also add new node
 ```
 
-#### Step A4: 確認新 PV 出現
+#### Step A4: Confirm new PVs appear
 ```bash
 oc get pv | grep localblock | grep Available
-# 預期：有新嘅 Available PV
+# Expected: new Available PVs present
 ```
 
-#### Step A5: 等 Ceph Rebalance + 健康
+#### Step A5: Wait for Ceph Rebalance + healthy
 ```bash
-# ⚠️ 等 Ceph 健康先繼續（可能需要數小時）
+# ⚠️ Wait for Ceph healthy before continuing (may take several hours)
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph health
-# 等 HEALTH_OK
+# wait for HEALTH_OK
 ceph osd tree
 exit
 ```
 
-#### Step B1: Scale down 舊 node 上嘅 ODF pods
+#### Step B1: Scale down ODF pods on old node
 ```bash
-# 識別舊 node 上嘅 ODF pods
+# identify ODF pods on old node
 oc get pods -n openshift-storage -o wide | grep -i <old-infra>
 
-# Scale down mon（如果 mon 跑喺呢個 node）
+# Scale down mon (if mon runs on this node)
 oc scale deployment rook-ceph-mon-c --replicas=0 -n openshift-storage
 
 # Scale down OSD
@@ -1138,102 +1138,102 @@ oc scale deployment rook-ceph-osd-0 --replicas=0 -n openshift-storage
 oc scale deployment --selector=app=rook-ceph-crashcollector,node_name=<old-infra> --replicas=0 -n openshift-storage
 ```
 
-#### Step B2: 刪除舊 OSD
+#### Step B2: Delete old OSD
 ```bash
-# 確認舊 OSD ID
+# confirm old OSD ID
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph osd tree
-# 記低舊 infra 上嘅 OSD ID
+# note down OSD IDs on old infra
 exit
 
-# 執行 OSD removal job
+# run OSD removal job
 oc process -n openshift-storage ocs-osd-removal \
   -p FAILED_OSD_IDS=<old-osd-id1>,<old-osd-id2>,<old-osd-id3> | oc create -f -
 
-# 等 removal job 完成
+# wait for removal job to complete
 oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage -w
-# 等 Completed
+# wait for Completed
 
-# 刪除 removal job
+# delete removal job
 oc delete job ocs-osd-removal-job -n openshift-storage
 ```
 
-#### Step B3: 更新 LocalVolumeDiscovery + LocalVolumeSet（移除舊 node）
+#### Step B3: Update LocalVolumeDiscovery + LocalVolumeSet (remove old node)
 ```bash
-# 更新 LocalVolumeDiscovery（移除舊 node）
+# update LocalVolumeDiscovery (remove old node)
 oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
-# nodeSelector values 移除舊 node
+# nodeSelector values remove old node
 
-# 更新 LocalVolumeSet（同樣移除舊 node）
+# update LocalVolumeSet (also remove old node)
 oc edit -n $local_storage_project localvolumeset localblock
-# 同樣移除舊 node
+# also remove old node
 ```
 
-#### Step B4: Cordon + Drain + 刪除舊 VM
+#### Step B4: Cordon + Drain + delete old VM
 ```bash
 oc adm cordon <old-infra>
 oc adm drain <old-infra> --force --delete-emptydir-data --ignore-daemonsets
 oc delete node <old-infra>
 ```
 
-#### Step B5: 驗證
+#### Step B5: verify
 ```bash
-# 確認 Ceph 健康
+# confirm Ceph healthy
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph health
 ceph osd tree
 exit
 
-# 確認所有 ODF pods 正常
+# confirm all ODF pods normal
 oc get pods -n openshift-storage | grep -v Running
 
-# 確認 CSI driver 正常
+# confirm CSI driver normal
 oc get pods -n openshift-storage | grep csi
 
-# 確認 StorageClass 正常
+# confirm StorageClass normal
 oc get sc
 
-# 確認 PVC 正常
+# confirm PVC normal
 oc get pvc --all-namespaces | grep -v Bound
 ```
 
-#### Step B6: 等 Ceph Rebalance 完成
+#### Step B6: Wait for Ceph Rebalance to complete
 ```bash
-# ⚠️ 可能需要數小時
+# ⚠️ May take several hours
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph -s
-# 等 "recovery" 或 "backfill" 完成
-# 等 ceph health 變 HEALTH_OK
+# wait for "recovery" or "backfill" to complete
+# wait for ceph health to become HEALTH_OK
 exit
 ```
 
-#### Step B7: 等待穩定
+#### Step B7: Wait for Stability
 ```
-⚠️ 等至少 24 小時觀察穩定性，確認：
+⚠️ Wait at least 24 hours to observe stability, confirm:
 - Ceph HEALTH_OK
-- 所有 PVC Bound
-- 所有 ODF pods Running
-- 應用程序正常
+- All PVCs Bound
+- All ODF pods Running
+- Applications normal
 ```
 
-#### 重複 Step A1-B7（infra02→bm-storage02, infra03→bm-storage03）
+#### Repeat Step A1-B7 (infra02→bm-storage02, infra03→bm-storage03)
 
-### Phase 1b 驗收標準
-- [ ] 3 部 BM storage node Ready
+### Phase 1b Acceptance Criteria
+- [ ] 3 BM storage nodes Ready
 - [ ] Ceph HEALTH_OK
-- [ ] 所有 OSD 正常
-- [ ] 所有 PVC Bound
-- [ ] 所有 StorageClass 正常
-- [ ] 所有 ODF pods Running
-- [ ] 所有 CSI driver pods Running
+- [ ] All OSDs normal
+- [ ] All PVCs Bound
+- [ ] All StorageClasses normal
+- [ ] All ODF pods Running
+- [ ] All CSI driver pods Running
 
-### Phase 1b ⚠️ 注意事項
-1. **每次只換一個 node** — 唔好同時替換多個
-2. **等 Ceph HEALTH_OK** — 每次替換後等 rebalance 完成先做下一個
-3. **磁盤規格一致** — 新 BM 嘅磁盤 size/type 要同舊 infra 一樣
-4. **Rebalance 時間** — 取決於數據量，可能數小時
-5. **I/O 影響** — Rebalance 期間會有大量 background I/O
-6. **Scale down 順序** — 先 scale down ODF pods，再 cordon/drain
+### Phase 1b ⚠️ Important Notes
+1. **Replace only one node at a time** — don't replace multiple simultaneously
+2. **Wait for Ceph HEALTH_OK** — after each replacement wait for rebalance to complete before proceeding
+3. **Disk specifications must match** — new BM disk size/type must match old infra
+4. **Rebalance time** — depends on data volume, may take several hours
+5. **I/O Impact** — significant background I/O during rebalance
+6. **Scale down sequence** — first scale down ODF pods, then cordon/drain
 
 ---
 
@@ -1242,72 +1242,72 @@ exit
 
 > **Risk: LOW | Time: 3-5 days | Method: cordon/drain/replace + nodeSelector update**
 
-### Phase 1c 概念
+### Phase 1c Concept
 
 ```
 infra04-06 (VM) → bm-infra01-03 (BM)
-Monitoring, Quay, Egress 等組件跟住 nodeSelector 移動
+Monitoring, Quay, Egress components follow nodeSelector migration
 ```
 
-### Phase 1c 前置條件
-- [ ] 3 台 BM infra 機已準備好（16 CPU, 64GB）
-- [ ] RHCOS ISO 已準備好
-- [ ] Network 連通（同 VLAN）
-- [ ] Phase 1a + 1b 已完成
+### Phase 1c Prerequisites
+- [ ] 3 BM infra servers ready (16 CPU, 64GB)
+- [ ] RHCOS ISO ready
+- [ ] Network connectivity (same VLAN)
+- [ ] Phase 1a + 1b completed
 
-### 每個 infra node 嘅替換步驟（重複 3 次）
+### Each Infra Node Replacement Steps (repeat 3 times)
 
-#### Step C1: 加新 BM infra node 到集群
+#### Step C1: Add new BM infra node to cluster
 ```bash
-# 安裝 RHCOS + 加入集群做 worker
-# 批准 CSR
-# 等 node Ready
+# install RHCOS + join cluster as worker
+# approve CSR
+# wait for node Ready
 ```
 
-#### Step C2: 更新 monitoring/quoter/egress 嘅 nodeSelector
+#### Step C2: Update monitoring/quoter/egress nodeSelector
 ```bash
-# 更新 OpenShift Monitoring stack 嘅 nodeSelector
-# 將 Prometheus/Alertmanager/Thanos 嘅 nodeSelector 改為指向新 BM node
+# update OpenShift Monitoring stack nodeSelector
+# change Prometheus/Alertmanager/Thanos nodeSelector to point to new BM node
 
-# 更新 Quay 嘅 nodeSelector（如有）
+# update Quay nodeSelector (if applicable)
 
-# 更新 Egress 嘅 nodeSelector（如有）
+# update Egress nodeSelector (if applicable)
 ```
 
-#### Step C3: Cordon + Drain 舊 VM
+#### Step C3: Cordon + Drain old VM
 ```bash
 oc adm cordon <old-infra>
 oc adm drain <old-infra> --force --delete-emptydir-data --ignore-daemonsets
 ```
 
-#### Step C4: 刪除舊 VM
+#### Step C4: Delete old VM
 ```bash
 oc delete node <old-infra>
-# 從 vCenter 刪除 VM
+# delete VM from vCenter
 ```
 
-#### Step C5: 驗證
+#### Step C5: verify
 ```bash
-# 確認 monitoring stack 正常
+# confirm monitoring stack normal
 oc get pods -n openshift-monitoring
 
-# 確認 Quay 正常（如有）
+# confirm Quay normal (if applicable)
 
-# 確認 Egress 正常
+# confirm Egress normal
 
-# 確認所有 pods 正常
+# confirm all pods normal
 oc get pods --all-namespaces | grep -v Running | grep -v Completed
 ```
 
-#### 重複 Step C1-C5（infra05→bm-infra02, infra06→bm-infra03）
+#### Repeat Step C1-C5 (infra05→bm-infra02, infra06→bm-infra03)
 
-### Phase 1c 驗收標準
-- [ ] 3 部 BM infra node Ready
-- [ ] Monitoring stack 正常（Prometheus, Alertmanager, Thanos）
-- [ ] Quay 正常
-- [ ] Egress 正常
-- [ ] 所有 pods 正常
-- [ ] 所有 alerts 正常
+### Phase 1c Acceptance Criteria
+- [ ] 3 BM infra nodes Ready
+- [ ] Monitoring stack normal (Prometheus, Alertmanager, Thanos)
+- [ ] Quay normal
+- [ ] Egress normal
+- [ ] All pods normal
+- [ ] All alerts normal
 
 ---
 
@@ -1316,136 +1316,136 @@ oc get pods --all-namespaces | grep -v Running | grep -v Completed
 
 ### Phase 2: Masters VM → BM (Plan B)
 
-> **Updated 2026-09-14 (v3)**: 根據專家審查 + OCP 4.20 官方文檔修正。
-> - 核心修正：刪除 Machine 對象觸發 etcd Operator 自動移除 member，唔再手動 `etcdctl member remove`
-> - 新增：etcd Secrets 清理、HAProxy 後端更新、etcd Quorum Guard 說明、CSR 監控腳本、穩定性驗收標準
+> **Updated 2026-09-14 (v3)**: Based on expert review + OCP 4.20 official documentation correction.
+> - Core correction: delete Machine object Triggers etcd Operator automatic member removal, no more manual `etcdctl member remove`
+> - Added: etcd Secrets cleanup, HAProxy backend update, etcd Quorum Guard explanation, CSR monitor script, stability Acceptance Criteria
 
-#### 前置條件
-- [ ] 3 台 BM 機已準備好（12 CPU, 64GB each）
-- [ ] RHCOS ISO 已準備好（匹配 OCP 版本 4.20.27）
-- [ ] Network 連通（同 VLAN）
-- [ ] DNS 正反向解析正常
-- [ ] BMC/IPMI 可用
-- [ ] HTTP server 準備好放 ignition config（master.ign）
-- [ ] HAProxy 後端已配置好（可以添加新 BM node IP）
-- [ ] 確認冇 ControlPlaneMachineSet：`oc get controlplanemachineset -n openshift-machine-api`
-- [ ] 提取 master Ignition config：`oc extract -n openshift-machine-api secret/master-user-data-managed --keys=userData --to=- > master.ign`
-- [ ] 開一個終端跑 CSR 監控：`watch -n 5 'oc get csr | grep Pending'`
+#### Prerequisites
+- [ ] 3 BM servers ready (12 CPU, 64GB each)
+- [ ] RHCOS ISO ready (matching OCP version 4.20.27)
+- [ ] Network connectivity (same VLAN)
+- [ ] DNS forward/reverse resolution normal
+- [ ] BMC/IPMI accessible
+- [ ] HTTP server ready to host ignition config (master.ign)
+- [ ] HAProxy backend configured (able to add new BM node IP)
+- [ ] Verify no ControlPlaneMachineSet: `oc get controlplanemachineset -n openshift-machine-api`
+- [ ] Extract master Ignition config: `oc extract -n openshift-machine-api secret/master-user-data-managed --keys=userData --to=- > master.ign`
+- [ ] Open a terminal to run CSR monitor: `watch -n 5 'oc get csr | grep Pending'`
 
-#### 每個 Node（重複 3 次，一次只做一個）
+#### Each Node (repeat 3 times, one at a time)
 
 ##### Node 1: master01 → BM
-- [ ] 前置確認：集群健康、etcd 健康（3 members）、冇 CPMS
-- [ ] 備份 etcd（用官方 backup 腳本）
-- [ ] 準備 BMC Secret + BareMetalHost + Machine object
-- [ ] 等 BMH 狀態變 available
-- [ ] 安裝 RHCOS 到 BM 機
-- [ ] 批准 CSR（手動或自動腳本）
-- [ ] 等 node Ready
-- [ ] 等 etcd Operator 自動加入新 member（約 5-10 分鐘）
-- [ ] 確認 etcd cluster 有 4 個 members 且全部 healthy
-- [ ] 更新 HAProxy：添加新 BM node IP 到後端
-- [ ] Cordon + drain 舊 VM
-- [ ] 刪除舊 Machine 對象（觸發 etcd Operator 自動移除 member）
-- [ ] 刪除舊 BMH 對象
-- [ ] 清理舊節點嘅 etcd TLS secrets
-- [ ] 強制 etcd 重新部署
-- [ ] 更新 HAProxy：移除舊 VM IP
-- [ ] 更新 DNS（如需要）
-- [ ] 驗證：etcd 3 members healthy、所有 CO 正常、所有 node Ready
-- [ ] 等待 24 小時觀察穩定性
+- [ ] Pre-check: cluster healthy, etcd healthy (3 members), no CPMS
+- [ ] Backup etcd (using official backup script)
+- [ ] Prepare BMC Secret + BareMetalHost + Machine object
+- [ ] Wait for BMH status to become available
+- [ ] install RHCOS on BM server
+- [ ] approve CSR (manual or auto script)
+- [ ] wait for node Ready
+- [ ] wait for etcd Operator to automatically add new member (~5-10 minutes)
+- [ ] confirm etcd cluster has 4 members all healthy
+- [ ] Update HAProxy: add new BM node IP to backend
+- [ ] Cordon + drain old VM
+- [ ] delete old Machine object (Triggers etcd Operator automatic member removal)
+- [ ] delete old BMH object
+- [ ] Clean up old node etcd TLS secrets
+- [ ] Force etcd redeployment
+- [ ] Update HAProxy: remove old VM IP
+- [ ] Update DNS (if needed)
+- [ ] Verify: etcd 3 members healthy, all CO normal, all nodes Ready
+- [ ] wait 24 hours to observe stability
 
 ##### Node 2: master02 → BM
-（同上）
+(same as above)
 
 ##### Node 3: master03 → BM
-（同上）
+(same as above)
 
-#### Phase 2 完成後驗證
-- [ ] 所有 6 個 node Ready（3 masters + 3 workers 全 BM）
-- [ ] etcd cluster 健康（3 members）
-- [ ] ODF 健康
-- [ ] 所有 65 operators 正常
-- [ ] 所有 66 routes 正常
-- [ ] 所有 108 network policies 正常
-- [ ] ArgoCD sync 正常
-- [ ] Monitoring 正常
-- [ ] 移除舊 VMware master VMs
-- [ ] 調整 VMware license（12 → 6）
+#### Phase 2 Post-completion Verification
+- [ ] All 6 nodes Ready (3 masters + 3 workers all BM)
+- [ ] etcd cluster healthy (3 members)
+- [ ] ODF healthy
+- [ ] All 65 operators normal
+- [ ] All 66 routes normal
+- [ ] All 108 network policies normal
+- [ ] ArgoCD sync normal
+- [ ] Monitoring normal
+- [ ] remove old VMware master VMs
+- [ ] Adjust VMware license (12 → 6)
 
 ---
 
 
-## Phase 2: Control Plane Migration (Plan B - 逐個替換)
+## Phase 2: Control Plane Migration (Plan B - One-by-one Replacement)
 
-> **Updated 2026-09-14 (v3)**: 根據專家審查 + OCP 4.20 官方文檔修正。
-> - 核心修正：刪除 Machine 對象觸發 etcd Operator 自動移除 member，唔再手動 `etcdctl member remove`
-> - 新增：etcd Secrets 清理、HAProxy 後端更新、etcd Quorum Guard 說明、CSR 監控腳本、穩定性驗收標準
-> - 參考：OCP 4.20 "Replacing a healthy etcd member by scaling up and scaling down"
+> **Updated 2026-09-14 (v3)**: Based on expert review + OCP 4.20 official documentation correction.
+> - Core correction: delete Machine object Triggers etcd Operator automatic member removal, no more manual `etcdctl member remove`
+> - Added: etcd Secrets cleanup, HAProxy backend update, etcd Quorum Guard explanation, CSR monitor script, stability Acceptance Criteria
+> - Reference: OCP 4.20 "Replacing a healthy etcd member by scaling up and scaling down"
 
-### 為什麼揀方案 B
-- 冇需要重新安裝 ODF、operators、routes、ArgoCD 等全部嘢
-- Cluster 一直保持運作
-- 只係逐個 etcd member 替換
-- 核心方法對應 Red Hat 官方文檔："Replacing a healthy etcd member by scaling up and scaling down"
+### Why Choose Plan B
+- No need to reinstall ODF, operators, routes, ArgoCD, etc.
+- Cluster remains operational throughout
+- Only etcd member replacement one at a time
+- Core method corresponds to Red Hat official documentation:"Replacing a healthy etcd member by scaling up and scaling down"
 
-### etcd Quorum Guard 說明
-etcd Quorum Guard 係一個保護機制，會阻止 drain 操作如果 drain 會導致 etcd quorum 喺 4 個 CP 節點過渡期間，Quorum Guard 允許 drain 舊節點（因為仍有足夠 etcd members）。但如果你嘗試喺只有 3 個 CP 節點時強制 drain 其中一個，Quorum Guard 會阻止。呢個係保護機制，唔係錯誤。
+### etcd Quorum Guard Explanation
+etcd Quorum Guard is a protection mechanism that blocks drain operations if drain would cause etcd quorum loss. During the 4 CP node transition period, Quorum Guard allows draining old nodes (since there are still enough etcd members). But if you attempt to force drain one of only 3 CP nodes, Quorum Guard will block it. This is a protection mechanism, not an error.
 
-### 前置條件
-- 3 台 BM 機已準備好（同 master 規格：12 CPU, 64GB）
-- RHCOS ISO 已準備好（匹配 OCP 版本 4.20.27）
-- Network 連通（同 VLAN）
-- DNS 正反向解析正常
-- BMC/IPMI 可用
-- HTTP server 準備好放 master Ignition config
-- HAProxy 後端已配置好（可以添加新 BM node IP）
-- 確認冇 ControlPlaneMachineSet（`platform: none` 集群通常冇）
+### Prerequisites
+- 3 BM servers ready (same master specs: 12 CPU, 64GB)
+- RHCOS ISO ready (matching OCP version 4.20.27)
+- Network connectivity (same VLAN)
+- DNS forward/reverse resolution normal
+- BMC/IPMI accessible
+- HTTP server ready to host master Ignition config
+- HAProxy backend configured (able to add new BM node IP)
+- Verify no ControlPlaneMachineSet (`platform: none` clusters typically don't have one)
 
-### 提取 Master Ignition Config
+### Extract Master Ignition Config
 ```bash
-# 注意：如果集群安裝後有 MachineConfig 更新，master-user-data-managed 會自動更新
-# 確保喺添加新節點前提取最新版本
+# Note: if MachineConfig update was applied after cluster install, master-user-data-managed will auto-update
+# Ensure extracting the latest version before adding new nodes
 oc extract -n openshift-machine-api secret/master-user-data-managed \
   --keys=userData --to=- > master.ign
 ```
 
-### CSR 監控腳本（整個 Phase 2 期間開一個終端監控）
+### CSR Monitoring Script (keep a terminal running throughout Phase 2)
 ```bash
 watch -n 5 'oc get csr | grep Pending'
 ```
 
-### 步驟（每次只替換一個，重複 3 次）
+### Steps (replace one at a time, repeat 3 times)
 
-#### Step 1: 前置確認 + 備份 etcd（每次操作前必做！）
+#### Step 1: Pre-check + Backup etcd (mandatory before each operation!)
 ```bash
-# 1a. 確認集群健康
+# 1a. Verify cluster health
 oc get nodes
 oc get co | grep -v "True.*False.*False"
 
-# 1b. 確認 etcd 健康（3 個 members，全部 healthy）
+# 1b. confirm etcd healthy (3 members, all healthy)
 oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
 etcdctl member list -w table
 etcdctl endpoint health --cluster
 exit
 
-# 1c. 確認冇 ControlPlaneMachineSet
+# 1c. Verify no ControlPlaneMachineSet
 oc get controlplanemachineset -n openshift-machine-api
 
-# 1d. 備份 etcd（用官方 backup 腳本）
+# 1d. Backup etcd (using official backup script)
 oc exec -n openshift-etcd \
   $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
   /usr/local/bin/cluster-backup.sh /home/core/assets/backup
 
-# 1e. 驗證 backup
+# 1e. verify backup
 oc exec -n openshift-etcd \
   $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
   ls -la /home/core/assets/backup/
 ```
 
-#### Step 2: 準備 BareMetalHost + Machine object
+#### Step 2: Prepare BareMetalHost + Machine object
 ```bash
-# 建立 BMC Secret
+# Create BMC Secret
 cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: Secret
@@ -1458,7 +1458,7 @@ data:
   password: $(echo -n '<bmc_pass>' | base64)
 EOF
 
-# 建立 BareMetalHost
+# Create BareMetalHost
 cat <<EOF | oc apply -f -
 apiVersion: metal3.io/v1alpha1
 kind: BareMetalHost
@@ -1477,30 +1477,30 @@ spec:
   online: true
 EOF
 
-# 等 BMH 狀態變 available
+# Wait for BMH status to become available
 oc get bmh -n openshift-machine-api master-bm-<N> -w
 ```
 
-#### Step 3: 安裝 RHCOS 到 BM 機
+#### Step 3: Install RHCOS on BM server
 ```bash
-# ⚠️ 如果 BMH 已配置 Redfish Virtual Media（BMC/IPMI 可用），
-# RHCOS 安裝由 Bare Metal Operator 自動完成（externallyProvisioned: false），Step 3 可跳過。
-# Step 3 僅適用於無 BMC 支持、需要手動插 USB/ISO 嘅場景。
+# ⚠️ If BMH is configured with Redfish Virtual Media (BMC/IPMI available),
+# RHCOS installation is handled automatically by Bare Metal Operator (externallyProvisioned: false), Step 3 can be skipped.
+# Step 3 is only for scenarios without BMC support, requiring manual USB/ISO insertion.
 
-# 手動安裝方法（僅無 BMC 時使用）：
-# 方法 1: coreos-installer（從 ISO 啟動）
+# Manual installation method (only when BMC is unavailable):
+# Method 1: coreos-installer (boot from ISO)
 sudo coreos-installer install /dev/sda \
     --ignition-url=http://<http_server>/master.ign \
     --insecure-ignition \
     --platform=metal
 
-# 方法 2: 用 ISO + Ignition 直接啟動
-# 將 master.ign 放入 ISO 或用 PXE 啟動
+# Method 2: Boot directly from ISO + Ignition
+# Place master.ign in ISO or use PXE boot
 ```
 
-#### Step 4: 建立 Machine object 並加入集群
+#### Step 4: Create Machine object and join cluster
 ```bash
-# 建立 Machine object（copy providerSpec from 另一個 control plane Machine）
+# Create Machine object (copy providerSpec from another control plane Machine)
 cat <<EOF | oc apply -f -
 apiVersion: machine.openshift.io/v1beta1
 kind: Machine
@@ -1533,13 +1533,13 @@ EOF
 ```
 
 ```bash
-# 批准 CSR（新節點會產生 client + server 兩個 CSR）
-# 方法 1: 手動批准
+# approve CSR (new node will generate client + server CSRs)
+# Method 1: Manual approval
 oc get csr | grep Pending
 oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | \
   xargs oc adm certificate approve
 
-# 方法 2: 自動批准腳本（整個 Phase 2 期間開一個終端跑）
+# Method 2: Auto-approval script (run in a terminal throughout Phase 2)
 while true; do
   PENDING=$(oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}')
   if [ -n "$PENDING" ]; then
@@ -1549,22 +1549,22 @@ while true; do
   sleep 10
 done
 
-# 等 node Ready
+# wait for node Ready
 oc get nodes -w
-# 等 <cluster-name>-master-bm-<N> 狀態變 Ready
+# wait for <cluster-name>-master-bm-<N> status to become Ready
 ```
 
-#### Step 5: 等 etcd Operator 自動加入新 member + HAProxy 更新
+#### Step 5: Wait for etcd Operator to automatically add new member + HAProxy update
 ```bash
-# ⚠️ 重要：etcd Operator 會自動偵測新嘅 control plane node
-# 並自動將新 node 加入 etcd cluster，唔需要手動 patch 或 etcdctl member add
-# 大約等 5-10 分鐘
+# ⚠️ Important: etcd Operator automatically detects new control plane nodes
+# and automatically adds the new node to the etcd cluster, no manual patch or etcdctl member add needed
+# Wait approximately 5-10 minutes
 
-# ⚠️ 關鍵等待步驟：必須看到 4 個 members 且全部 "is healthy" 才能繼續
+# ⚠️ Critical wait steps: must see 4 members all "is healthy" before proceeding
 oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
 etcdctl member list -w table
 
-# 預期輸出：4 個 members（3 舊 + 1 新）
+# Expected output: 4 members (3 old + 1 new)
 # +------------------+---------+---------+---------------------------+---------------------------+------------+
 # |        ID        | STATUS  |  NAME   |        PEER ADDRS        |       CLIENT ADDRS        |  IS LEARNER |
 # +------------------+---------+---------+---------------------------+---------------------------+------------+
@@ -1574,53 +1574,53 @@ etcdctl member list -w table
 # | <id4>            | started | new-bm  | https://192.168.x.x:2380  | https://192.168.x.x:2379  |      false |
 # +------------------+---------+---------+---------------------------+---------------------------+------------+
 
-# 驗證所有 etcd members 健康
+# verify all etcd members healthy
 etcdctl endpoint health --cluster
-# 預期：4 個 endpoints 全部 "is healthy"
+# Expected: 4 endpoints all "is healthy"
 exit
 
-# 更新 HAProxy：將新 BM 節點 IP 加入後端
-# 在 HAProxy 配置中添加新節點到：
+# update HAProxy: add new BM node IP to backend
+# In HAProxy config add new node to:
 #   backend openshift-api-server
 #   backend machine-config-server
-# 然後重載 HAProxy
+# Then reload HAProxy
 # systemctl reload haproxy
 ```
 
-#### Step 6: 移除舊 VM — Cordon + Drain + 刪除 Machine（觸發自動 etcd 移除）
+#### Step 6: Remove old VM — Cordon + Drain + delete Machine (triggers automatic etcd remove)
 ```bash
-# ⚠️ 重要：先 cordon/drain，再刪除 Machine 對象
-# 刪除 Machine 會觸發 etcd Operator 自動移除對應嘅 etcd member
-# 唔需要手動執行 etcdctl member remove
+# ⚠️ Important: cordon/drain first, then delete Machine object
+# delete Machine triggers etcd Operator to automatically remove the corresponding etcd member
+# No need to manually run etcdctl member remove
 
-# 6a. Cordon 舊 VM 節點（停止新 Pod 調度）
+# 6a. Cordon old VM node (stop new Pod scheduling)
 oc adm cordon <old-vm-master-name>
 
-# 6b. Drain 舊 VM 節點（驅逐 Pod）
-# 注意：etcd Quorum Guard 在 4 個 CP 節點時允許此操作
+# 6b. Drain old VM node (evict Pods)
+# Note: etcd Quorum Guard allows this operation with 4 CP nodes
 oc adm drain <old-vm-master-name> \
   --ignore-daemonsets \
   --delete-emptydir-data \
   --force
 
-# 6c. 刪除舊 VM 嘅 Machine 對象
-# ⚠️ 呢一步會觸發 etcd Operator 自動移除對應嘅 etcd member
-# 唔需要手動執行 etcdctl member remove
+# 6c. Delete old VM Machine object
+# ⚠️ This step triggers etcd Operator to automatically remove the corresponding etcd member
+# No need to manually run etcdctl member remove
 oc delete machine <old-vm-machine-name> -n openshift-machine-api
 
-# 6d. 刪除舊 VM 嘅 BMH 對象
+# 6d. Delete old VM BMH object
 oc delete bmh <old-vm-bmh-name> -n openshift-machine-api
 
-# 6e. 等待 Node 對象自動刪除（Machine 刪除後自動觸發）
+# 6e. Wait for Node object to auto-delete (automatically triggered after Machine delete)
 oc get nodes -w
 ```
 
-#### Step 7: 清理 etcd Secrets + 強制重新部署 + 驗證
+#### Step 7: Clean up etcd Secrets + Force redeployment + verify
 ```bash
-# 7a. 清理舊節點嘅 etcd TLS secrets
-# 移除舊節點後，清理其對應嘅 etcd secrets，避免 etcd Operator 出現告警
+# 7a. Clean up old node etcd TLS secrets
+# After removing old node, clean up its corresponding etcd secrets to avoid etcd Operator alerts
 oc get secrets -n openshift-etcd | grep <old-vm-master-name>
-# 應該看到：
+# Expected to see:
 # etcd-peer-<old-master-name>
 # etcd-serving-<old-master-name>
 # etcd-serving-metrics-<old-master-name>
@@ -1628,89 +1628,89 @@ oc get secrets -n openshift-etcd | grep <old-vm-master-name>
 oc get secrets -n openshift-etcd | grep <old-vm-master-name> | \
   awk '{print $1}' | xargs oc -n openshift-etcd delete secrets
 
-# 7b. 強制 etcd Operator 重新部署所有 etcd pods（確保配置一致）
-# ⚠️ 強制重新部署期間 etcd 會有滾動重啟，屬正常現象（3 個 members 中 2 個仍然健康，quorum 不受影響）
-# 等待所有 etcd pods 重新變為 Running 後再進行 Step 8 驗證
+# 7b. Force etcd Operator to redeploy all etcd pods (ensure config consistency)
+# ⚠️ During force redeployment, etcd will have rolling restart, which is normal behavior (2 of 3 members still healthy, quorum unaffected)
+# Wait for all etcd pods to become Running before proceeding to Step 8 verification
 oc patch etcd cluster \
   -p='{"spec": {"forceRedeploymentReason": "master-replacement-'"$(date --rfc-3339=ns)"'"}}' \
   --type=merge
 
-# 等 etcd pods 重新部署完成
+# Wait for etcd pods to finish redeployment
 oc get pods -n openshift-etcd -w
-# 等所有 etcd pods 變 Running
+# Wait for all etcd pods to become Running
 
-# 7c. 更新 HAProxy：從後端移除舊 VM 節點 IP
-# 在 HAProxy 配置中移除舊節點
-# 然後重載 HAProxy
+# 7c. Update HAProxy: remove old VM node IP from backend
+# In HAProxy config remove old node
+# Then reload HAProxy
 # systemctl reload haproxy
 
-# 7d. 更新 DNS（如需要）
+# 7d. Update DNS (if needed)
 ```
 
-#### Step 8: 最終驗證（穩定性驗收標準）
+#### Step 8: Final verify (stability Acceptance Criteria)
 ```bash
-# etcd 健康（3 個 members，全部 healthy）
+# etcd healthy (3 members, all healthy)
 oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
 etcdctl member list -w table
 etcdctl endpoint health --cluster
 exit
 
-# 所有 node Ready
+# All nodes Ready
 oc get nodes
 
-# 所有 Cluster Operators 正常（Available=True, Progressing=False, Degraded=False）
+# All Cluster Operators normal (Available=True, Progressing=False, Degraded=False)
 oc get co | grep -v "True.*False.*False"
 
-# ODF 健康
+# ODF healthy
 oc get pods -n openshift-storage
 
-# 監控系統無告警
+# Monitoring system no alerts
 oc get alerts --all-namespaces | grep -i "firing"
 
-# 應用程序正常
+# Applications normal
 oc get routes --all-namespaces | wc -l
 ```
 
-**⚠️ 穩定性驗收：以下所有條件都要滿足先做下一個 node：**
-- [ ] etcd cluster 3 個 members 全部 healthy
-- [ ] 所有 Cluster Operators Available=True, Progressing=False, Degraded=False
-- [ ] 所有 nodes Ready
-- [ ] 監控系統無新告警（特別係 etcd 相關）
-- [ ] 至少等 24 小時觀察穩定性
+**⚠️ Stability acceptance: all of the following conditions must be met before proceeding to next node:**
+- [ ] etcd cluster 3 members all healthy
+- [ ] All Cluster Operators Available=True, Progressing=False, Degraded=False
+- [ ] All nodes Ready
+- [ ] Monitoring system no new alerts (especially etcd-related)
+- [ ] Wait at least 24 hours to observe stability
 
-### ⚠️ Phase 2 風險提醒
-1. **一次只換一個** — 等 etcd 完全穩定先做下一個（建議等 24 小時）
-2. **3 個 control plane = 容錯 1 個** — 換緊嗰陣如果另一個掛咗，cluster 會出問題
-3. **安排 maintenance window** — 換嘅時候 etcd 會有短暫唔穩定（force redeployment 時）
-4. **CSR 批准** — 用自動批准腳本（整個 Phase 2 期間開一個終端跑）
-5. **時間估算** — 每個 node 大約 2-3 小時（唔包括 24 小時穩定觀察）
-6. **HAProxy 更新** — 必須喺步驟中及時更新，否則 API 請求會路由到已移除嘅舊 VM
-7. **DNS** — 要更新 control plane node 嘅 DNS 記錄
-8. **etcd Quorum Guard** — 4 個 CP 節點時允許 drain，3 個時會阻止（保護機制）
-9. **etcd Secrets** — 舊節點嘅 TLS secrets 要清理，避免 Operator 告警
+### ⚠️ Phase 2 Risk Reminders
+1. **Replace only one at a time** — wait for etcd to fully stabilize before proceeding (recommend waiting 24 hours)
+2. **3 control planes = tolerate 1 failure** — if another fails during replacement, cluster will have issues
+3. **Schedule maintenance window** — etcd will have brief instability during replacement (during force redeployment)
+4. **CSR approval** — use auto-approval script (run in a terminal throughout Phase 2)
+5. **Time estimate** — each node approximately 2-3 hours (excluding 24-hour stability observation)
+6. **HAProxy update** — must be updated promptly during steps, otherwise API requests will be routed to removed old VM
+7. **DNS** — need to update control plane node DNS records
+8. **etcd Quorum Guard** — allows drain with 4 CP nodes, blocks with 3 (protection mechanism)
+9. **etcd Secrets** — old node TLS secrets must be cleaned up to avoid Operator alerts
 
-### Phase 2 命令快速參考
+### Phase 2 Command Quick Reference
 ```bash
-# 確認集群健康
+# Verify cluster health
 oc get nodes && oc get co | grep -v "True.*False.*False"
 
-# 備份
+# backup
 oc exec -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
   /usr/local/bin/cluster-backup.sh /home/core/assets/backup
 
-# 加入（自動）— etcd Operator 自動處理，唔需要手動命令
+# Add (automatic) — etcd Operator handles automatically, no manual commands needed
 
-# 移除（自動）— 刪除 Machine 對象觸發
+# Remove (automatic) — delete Machine object triggers
 oc delete machine <old-machine-name> -n openshift-machine-api
 
-# 清理 etcd secrets
+# Clean up etcd secrets
 oc get secrets -n openshift-etcd | grep <old-name> | awk '{print $1}' | \
   xargs oc -n openshift-etcd delete secrets
 
-# 強制重新部署
+# Force redeployment
 oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'$(date --rfc-3339=ns)'"}}' --type=merge
 
-# 驗證
+# verify
 oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
 etcdctl member list -w table
 etcdctl endpoint health --cluster
@@ -1722,47 +1722,47 @@ exit
 
 ## Bare Metal Network Configuration (NIC Bonding)
 
-VMware 有 vSwitch 做 NIC teaming，裸機要自己搞 bonding。OCP bare metal 有三個時機配 bonding：
+VMware has vSwitch for NIC teaming, bare metal requires self-configured bonding. OCP bare metal has three methods for configuring bonding:
 
-### Bonding 方法選擇
+### Bonding Method Selection
 
-| 時機 | 方法 | 適用場景 | 唔使裝 Operator |
+| Timing | Method | Use Case | No Operator Install Needed |
 |------|------|----------|----------------|
-| 安裝時 | Kernel argument `bond=` | 最簡單，initramfs 階段 | ✅ |
-| 安裝時 | NMState YAML + Ignition | Official Recommended，完整控制 | ✅ |
-| 安裝後 | MachineConfig + NMState | 已有 cluster 遷移 | ✅ |
+| During install | Kernel argument `bond=` | Simplest, initramfs stage | ✅ |
+| During install | NMState YAML + Ignition | Official Recommended, full control | ✅ |
+| After install | MachineConfig + NMState | Existing cluster migration | ✅ |
 
-**重要：唔需要裝 Kubernetes NMState Operator。**
-NMState Operator 只能管理 secondary NIC，管唔到 br-ex bridge。
-你嘅 bonding 需求用 MachineConfig 就夠。
+**Important: No need to install Kubernetes NMState Operator.**
+NMState Operator can only manage secondary NICs, not the br-ex bridge.
+Your bonding needs can be satisfied with MachineConfig alone.
 
-### 方法 1: Kernel Argument（安裝時最簡單）
+### Method 1: Kernel Argument (simplest during install)
 
-用 RHCOS ISO 啟動嗰陣，喺 kernel command line 加 `bond=` 參數：
+When booting from RHCOS ISO, add `bond=` parameter to kernel command line:
 
 ```
-# DHCP 模式
+# DHCP mode
 bond=bond0:em1,em2:mode=active-backup
 ip=bond0:dhcp
 nameserver=192.168.89.61
 
-# Static IP 模式
+# Static IP mode
 bond=bond0:em1,em2:mode=active-backup
 ip=192.168.89.50::192.168.89.1:255.255.255.0:worker01.baremetal.bond:bond0:none
 ```
 
 - `bond0` = bonding device name
-- `em1,em2` = 物理 NIC（用 `ip link` 查詢實際名稱）
-- `mode=active-backup` = 單活備援（最安全，唔使 switch config）
-- ⚠️ 只控制 initramfs 階段，後續 br-ex 要另外配
+- `em1,em2` = physical NICs (use `ip link` to query actual names)
+- `mode=active-backup` = active-backup (safest, no switch config needed)
+- ⚠️ Only controls initramfs stage, br-ex needs separate configuration later
 
-### 方法 2: NMState YAML + Ignition（安裝時 Official 方式）
+### Method 2: NMState YAML + Ignition (official method during install)
 
-建立 NMState YAML → base64 → 放入 ignition config：
+Create NMState YAML → base64 → place in ignition config:
 
 ```yaml
 interfaces:
-  # 物理 NIC 1
+  # Physical NIC 1
   - name: eno1
     type: ethernet
     state: up
@@ -1771,7 +1771,7 @@ interfaces:
     ipv6:
       enabled: false
 
-  # 物理 NIC 2
+  # Physical NIC 2
   - name: eno2
     type: ethernet
     state: up
@@ -1780,7 +1780,7 @@ interfaces:
     ipv6:
       enabled: false
 
-  # Bond 介面
+  # Bond interface
   - name: bond0
     type: bond
     state: up
@@ -1794,7 +1794,7 @@ interfaces:
         - eno1
         - eno2
 
-  # OVS Bridge（OVN-Kubernetes 嘅 br-ex）
+  # OVS Bridge (OVN-Kubernetes br-ex)
   - name: br-ex
     type: ovs-bridge
     state: up
@@ -1807,7 +1807,7 @@ interfaces:
         - name: bond0
         - name: br-ex
 
-  # OVS Interface（br-ex 嘅 internal port）
+  # OVS Interface (br-ex internal port)
   - name: br-ex
     type: ovs-interface
     state: up
@@ -1818,15 +1818,15 @@ interfaces:
       auto-route-metric: 48
 ```
 
-Base64 編碼後放入 ignition：
+Base64 encode and place in ignition:
 
 ```bash
 cat br-ex-public.yaml | base64 -w 0
 ```
 
-### 方法 3: MachineConfig（安裝後 / 現有 Cluster）
+### Method 3: MachineConfig (after install / existing cluster)
 
-用 MachineConfig 推送 NMState YAML 到 `/etc/nmstate/openshift/<node>.yml`：
+Use MachineConfig to push NMState YAML to `/etc/nmstate/openshift/<node>.yml`:
 
 ```yaml
 apiVersion: machineconfiguration.openshift.io/v1
@@ -1848,61 +1848,60 @@ spec:
           path: /etc/nmstate/openshift/worker01.yml
 ```
 
-Apply 同 reboot：
+Apply and reboot:
 
 ```bash
 oc apply -f 10-br-ex-worker01.yaml
-# Node 會自動 reboot 套用配置
+# Node will automatically reboot to apply configuration
 ```
 
-### Bonding Mode 選擇
+### Bonding Mode Selection
 
 | Mode | Name | Switch Config | Redundancy | Load Balance |
 |------|------|---------------|------------|--------------|
-| 1 | active-backup | 唔需要 | ✅ | ❌ |
-| 2 | balance-xor | 要 | ✅ | ✅ (XOR) |
-| 4 | 802.3ad (LACP) | 要 LACP | ✅ | ✅ (最好) |
-| 6 | balance-alb | 唔需要 | ✅ | ✅ (ALB) |
+| 1 | active-backup | Not needed | ✅ | ❌ |
+| 2 | balance-xor | Required | ✅ | ✅ (XOR) |
+| 4 | 802.3ad (LACP) | Requires LACP | ✅ | ✅ (best) |
+| 6 | balance-alb | Not needed | ✅ | ✅ (ALB) |
 
-建議：
-- Switch 冇 LACP → mode 1 (active-backup)
-- Switch 有 LACP → mode 4 (802.3ad)
+Recommendations:
+- Switch without LACP → mode 1 (active-backup)
+- Switch with LACP → mode 4 (802.3ad)
 
-### 驗證 Bonding
+### Verify Bonding
 
 ```bash
-# 檢查 bond 狀態
+# check bond status
 oc debug node/<node> -- chroot /host cat /proc/net/bonding/bond0
 
-# 檢查 OVS bridge
+# check OVS bridge
 oc debug node/<node> -- chroot /host ovs-vsctl show
 
-# 檢查 nmstate
+# check nmstate
 oc debug node/<node> -- chroot /host nmstatectl show bond0
 ```
 
 ### Rollback
 
-如果 bonding 配置失敗：
+If bonding configuration fails:
 
 ```bash
-# 方法 1: 刪除 NMState 配置
+# Method 1: Delete NMState configuration
 oc debug node/<node> -- chroot /host rm /etc/nmstate/openshift/<node>.yml
 oc debug node/<node> -- chroot /host systemctl restart NetworkManager
 
-# 方法 2: 刪除 MachineConfig（從其他 working node）
+# Method 2: Delete MachineConfig (from another working node)
 oc delete machineconfig 10-br-ex-worker01
-# 觸發 reboot 套用
+# Triggers reboot to apply
 ```
 
-### ⚠️ Bonding 注意事項
+### ⚠️ Bonding Important Notes
 
-1. ** NIC 名稱要正確** — 用 `ip link` 確認實際 NIC 名稱（eno1/eno2/em1/em2/ens160 等）
-2. **MAC 地址** — bond 介面建議用 `copy-mac-from` 複製其中一個 NIC 嘅 MAC
-3. **auto-route-metric: 48** — 確保 br-ex default route 優先級最高
-4. **每台 BM 機都要配** — 唔好只配一台，3 台 worker 都要做
-5. **測試 failover** — 裝機後拔一條網線測試 bonding failover
+1. **NIC names must be correct** — use `ip link` to confirm actual NIC names (eno1/eno2/em1/em2/ens160 etc.)
+2. **MAC address** — bond interface recommends using `copy-mac-from` to copy MAC from one of the NICs
+3. **auto-route-metric: 48** — ensures br-ex default route has highest priority
+4. **Configure on every BM server** — don't just configure one, all 3 workers need it
+5. **Test failover** — after installation, unplug a network cable to test bonding failover
 
 ---
-
 
