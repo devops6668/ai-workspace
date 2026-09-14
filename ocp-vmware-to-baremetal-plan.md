@@ -1870,7 +1870,8 @@ oc get alerts --all-namespaces | grep -i "firing"
 
 ## Phase 3: Infra to Master BM (Move Infra Components)
 
-> **Risk: LOW-MEDIUM | Time: 1-2 weeks | Method: update nodeSelector/affinity + cordon/drain VM**
+> **Risk: LOW-MEDIUM | Time: 1-2 weeks | Method: update nodeSelector/tolerations + cordon/drain VM**
+> **Reference:** Red Hat Solution - Moving Infra Components to Master/Control Plane Nodes in RHOCP 4
 
 ### Overview
 
@@ -1878,17 +1879,26 @@ After Phase 2, you have 3 BM masters + 3 BM workers + 6 VMware infra VMs (infra0
 
 **No new BM machines needed.** All infra components run on the existing 3 BM master nodes alongside etcd and control plane.
 
+### Important Caveats (from Red Hat)
+
+When moving infrastructure components to master nodes, consider:
+
+1. **I/O hungry components should be avoided on master nodes** -- etcd is very sensitive to disk latency. Use NVMe for ODF/Ceph OSD, separate from etcd storage.
+2. **Increased reboot time** -- Ingress controller pods can cause slow node reboots due to high `terminationGracePeriodSeconds`.
+3. **Set resource limits** -- Set resource limits on infra workloads to prevent them from starving etcd/control plane.
+4. **Node selector + toleration required** -- OpenShift is NOT configured by default to allow workloads on master nodes. You must apply:
+   - `nodeSelector: node-role.kubernetes.io/master: ""`
+   - `tolerations: [{key: node-role.kubernetes.io/master, operator: Exists, effect: NoSchedule}]`
+
 ### Phase 3 Prerequisites
 
 - [ ] Phase 2 completed (3 BM masters + 3 BM workers)
-- [ ] Each master has dedicated NVMe disk for ODF/Ceph OSD
+- [ ] Each master has dedicated NVMe disk for ODF/Ceph OSD (separate from etcd)
 - [ ] etcd cluster healthy (3 members)
 - [ ] All Cluster Operators normal
 - [ ] 6 VMware infra VMs still running (infra01-06)
 
 ### Phase 3 Component Distribution
-
-Components are distributed across 3 BM master nodes:
 
 | BM Master | Components |
 |-----------|------------|
@@ -1898,77 +1908,156 @@ Components are distributed across 3 BM master nodes:
 
 ### Phase 3 Step-by-Step
 
-#### Step 1: Verify master node resources
+#### Step 1: Move Router (Ingress Controller) to Masters
 
 ```bash
-# Verify each master has sufficient resources
-oc describe node master01-bm | grep -A 5 "Allocated resources"
-oc describe node master02-bm | grep -A 5 "Allocated resources"
-oc describe node master03-bm | grep -A 5 "Allocated resources"
+# Patch IngressController to run on master nodes
+oc patch ingresscontrollers.operator.openshift.io default -n openshift-ingress-operator \
+  --type=merge -p '{"spec":{"nodePlacement": {"nodeSelector": {"matchLabels": {"node-role.kubernetes.io/master": ""}},"tolerations": [{"key": "node-role.kubernetes.io/master","operator": "Exists","effect":"NoSchedule"}]}}}'
+
+# Scale to 3 replicas (one per master)
+oc patch ingresscontroller/default -n openshift-ingress-operator --type=merge -p '{"spec":{"replicas": 3}}'
+
+# Verify
+oc get pods -n openshift-ingress -o wide
+# Expected: 3 router pods running on master nodes
 ```
 
-#### Step 2: Move ODF to master nodes
+#### Step 2: Move Registry to Masters
 
 ```bash
-# ODF/Ceph OSD should already be on master nodes if Phase 2 placed OSDs there
-# Verify Ceph OSD pods running on master nodes
-oc get pods -n openshift-storage -o wide | grep osd
-# Verify Ceph health
-oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
-ceph health
-exit
+# Patch Image Registry to run on master nodes
+oc patch configs.imageregistry.operator.openshift.io/cluster --type=merge \
+  -p '{"spec":{"nodeSelector": {"node-role.kubernetes.io/master": ""},"tolerations": [{"key": "node-role.kubernetes.io/master","operator": "Exists","effect": "NoSchedule"}]}}'
+
+# Verify
+oc get pods -n openshift-image-registry -o wide
+# Expected: registry pods running on master nodes
 ```
 
-#### Step 3: Move Monitoring to master01
+#### Step 3: Move Monitoring Stack to Masters
 
 ```bash
-# Update OpenShift Monitoring stack nodeSelector to master01
-# Edit Cluster Monitoring Config:
-oc edit configmap monitoring-config -n openshift-monitoring
-
-# Update Prometheus nodeSelector to master01
-# Update Alertmanager nodeSelector to master01
-# Update Thanos nodeSelector to master01
+# Create monitoring config with nodeSelector and tolerations
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |+
+    alertmanagerMain:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+    prometheusK8s:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+    prometheusOperator:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+    grafana:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+    k8sPrometheusAdapter:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+    kubeStateMetrics:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+    telemeterClient:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+    openshiftStateMetrics:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+EOF
 
 # Wait for pods to reschedule
 oc get pods -n openshift-monitoring -w
-# Verify all monitoring pods running on master01
-oc get pods -n openshift-monitoring -o wide | grep master01
+# Verify all monitoring pods running on master nodes
+oc get pods -n openshift-monitoring -o wide | grep master
 ```
 
-#### Step 4: Move GitOps + Pipelines + Quay to master02
+#### Step 4: Move Logging (Loki) to Masters
 
 ```bash
-# Update ArgoCD nodeSelector to master02
-# Update OpenShift Pipelines nodeSelector to master02
-# Update Quay nodeSelector to master02
-# Update Cert Manager nodeSelector to master02
-# Update OpenTelemetry nodeSelector to master02
-# Update KEDA nodeSelector to master02
+# Note: Loki is resource hungry (I/O, memory)
+# As of OCP 4.16, it is not possible to set resource limits for Loki
+# Monitor resource usage carefully after migration
+
+# Update Loki nodeSelector to master01
+# (specific patch depends on your Loki configuration)
+
+# Verify
+oc get pods -n openshift-logging -o wide
+```
+
+#### Step 5: Move GitOps + Pipelines + Quay to master02
+
+```bash
+# Update ArgoCD nodeSelector and tolerations to master02
+# Update OpenShift Pipelines nodeSelector and tolerations to master02
+# Update Quay nodeSelector and tolerations to master02
+# Update Cert Manager nodeSelector and tolerations to master02
+# Update OpenTelemetry nodeSelector and tolerations to master02
+# Update KEDA nodeSelector and tolerations to master02
 
 # Wait for pods to reschedule
 oc get pods -n openshift-gitops -w
 oc get pods -n openshift-pipelines -w
 ```
 
-#### Step 5: Move remaining operators to master03
+#### Step 6: Move remaining operators to master03
 
 ```bash
-# Update Service Mesh nodeSelector to master03
-# Update Elasticsearch ECK nodeSelector to master03
-# Update ACM nodeSelector to master03
-# Update Multicluster Engine nodeSelector to master03
-# Update NeuVector/Aqua/RHACS nodeSelector to master03
-# Update Confluent nodeSelector to master03
-# Update CloudNativePG nodeSelector to master03
-# Update DevWorkspace nodeSelector to master03
-# Update Web Terminal nodeSelector to master03
-# Update Kasten K10 nodeSelector to master03
+# Update Service Mesh nodeSelector and tolerations to master03
+# Update Elasticsearch ECK nodeSelector and tolerations to master03
+# Update ACM nodeSelector and tolerations to master03
+# Update Multicluster Engine nodeSelector and tolerations to master03
+# Update NeuVector/Aqua/RHACS nodeSelector and tolerations to master03
+# Update Confluent nodeSelector and tolerations to master03
+# Update CloudNativePG nodeSelector and tolerations to master03
+# Update DevWorkspace nodeSelector and tolerations to master03
+# Update Web Terminal nodeSelector and tolerations to master03
+# Update Kasten K10 nodeSelector and tolerations to master03
 
 # Wait for pods to reschedule
 ```
 
-#### Step 6: Verify all workloads migrated
+#### Step 7: Verify all workloads migrated
 
 ```bash
 # Verify all infra pods running on master nodes
@@ -1982,7 +2071,7 @@ oc get pods --all-namespaces -o wide | grep infra0
 oc get pods --all-namespaces | grep -v Running | grep -v Completed
 ```
 
-#### Step 7: Cordon + Drain + Delete infra VMs
+#### Step 8: Cordon + Drain + Delete infra VMs
 
 ```bash
 # For each infra VM (infra01-06):
@@ -2013,7 +2102,7 @@ oc delete node infra06
 # Delete VMs from vCenter
 ```
 
-#### Step 8: Final verification
+#### Step 9: Final verification
 
 ```bash
 # Verify cluster health
@@ -2054,12 +2143,13 @@ oc get applications -n openshift-gitops
 
 ### Phase 3 Important Notes
 
-1. **No new BM machines needed** -- Infra components share master nodes with etcd/control plane
-2. **NVMe for ODF** -- Each master must have dedicated NVMe for Ceph OSD, separate from etcd
-3. **Resource planning** -- Verify each master has enough resources before moving workloads
-4. **One operator at a time** -- Move operators one at a time, verify stability before next
-5. **Rebalancing** -- Ceph rebalance may take time after OSD migration
-6. **Monitoring** -- Watch for resource pressure on master nodes after workload migration
+1. **NVMe for ODF** -- Each master must have dedicated NVMe for Ceph OSD, separate from etcd
+2. **Resource planning** -- Verify each master has enough resources before moving workloads
+3. **One operator at a time** -- Move operators one at a time, verify stability before next
+4. **Rebalancing** -- Ceph rebalance may take time after OSD migration
+5. **Monitoring** -- Watch for resource pressure on master nodes after workload migration
+6. **Node selector + toleration required** -- Every component must have both nodeSelector and toleration to run on master nodes
+7. **Logging caveat** -- Loki is I/O hungry and cannot have resource limits set (as of OCP 4.16). Monitor carefully.
 
 ## Phase 4: Add 3 More Workers (Optional)
 
