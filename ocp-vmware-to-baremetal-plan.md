@@ -1870,8 +1870,9 @@ oc get alerts --all-namespaces | grep -i "firing"
 
 ## Phase 3: Infra to Master BM (Move Infra Components)
 
-> **Risk: LOW-MEDIUM | Time: 1-2 weeks | Method: update nodeSelector/tolerations + cordon/drain VM**
+> **Risk: LOW-MEDIUM | Time: 1-2 weeks | Method: update nodeSelector/tolerations + ODF rolling replace + cordon/drain VM**
 > **Reference:** Red Hat Solution - Moving Infra Components to Master/Control Plane Nodes in RHOCP 4
+> **Reference:** ODF 4.20 Replacing nodes - Section 2.1.1
 
 ### Overview
 
@@ -1881,14 +1882,27 @@ After Phase 2, you have 3 BM masters + 3 BM workers + 6 VMware infra VMs (infra0
 
 ### Important Caveats (from Red Hat)
 
-When moving infrastructure components to master nodes, consider:
-
 1. **I/O hungry components should be avoided on master nodes** -- etcd is very sensitive to disk latency. Use NVMe for ODF/Ceph OSD, separate from etcd storage.
 2. **Increased reboot time** -- Ingress controller pods can cause slow node reboots due to high `terminationGracePeriodSeconds`.
 3. **Set resource limits** -- Set resource limits on infra workloads to prevent them from starving etcd/control plane.
-4. **Node selector + toleration required** -- OpenShift is NOT configured by default to allow workloads on master nodes. You must apply:
-   - `nodeSelector: node-role.kubernetes.io/master: ""`
-   - `tolerations: [{key: node-role.kubernetes.io/master, operator: Exists, effect: NoSchedule}]`
+4. **Node selector + toleration required** -- OpenShift is NOT configured by default to allow workloads on master nodes. You must apply both nodeSelector and toleration.
+
+### Phase 3 Execution Order
+
+**Critical: Follow this exact order:**
+
+```
+Step A: Move non-ODF components (Router, Registry, Monitoring) to master nodes
+Step B: Move ODF from infra01-03 to master01-03 (Ceph OSD rolling replace, one at a time)
+Step C: Move remaining components (GitOps, Pipelines, Quay, etc.) to master nodes
+Step D: Cordon + Drain + Delete infra01-06 VMs
+```
+
+**Why this order:**
+1. Move Router/Registry/Monitoring first -- these don't depend on ODF
+2. Move ODF next -- this is the most complex step (Ceph OSD rolling replace)
+3. Move remaining components last
+4. Delete infra VMs only after ALL components are on master nodes
 
 ### Phase 3 Prerequisites
 
@@ -1897,6 +1911,7 @@ When moving infrastructure components to master nodes, consider:
 - [ ] etcd cluster healthy (3 members)
 - [ ] All Cluster Operators normal
 - [ ] 6 VMware infra VMs still running (infra01-06)
+- [ ] Ceph cluster healthy (`ceph health` = HEALTH_OK)
 
 ### Phase 3 Component Distribution
 
@@ -1906,9 +1921,11 @@ When moving infrastructure components to master nodes, consider:
 | master02 | etcd, control plane, ODF/Ceph OSD (NVMe), GitOps (ArgoCD), Pipelines (Tekton), Quay, Cert Manager, OpenTelemetry, KEDA |
 | master03 | etcd, control plane, ODF/Ceph OSD (NVMe), Service Mesh, ACM, Multicluster Engine, NeuVector/Aqua/RHACS, Confluent, CloudNativePG, DevWorkspace, Web Terminal, Kasten K10 |
 
-### Phase 3 Step-by-Step
+---
 
-#### Step 1: Move Router (Ingress Controller) to Masters
+### Step A: Move Non-ODF Components to Master Nodes
+
+#### Step A1: Move Router (IngressController) to Masters
 
 ```bash
 # Patch IngressController to run on master nodes
@@ -1923,7 +1940,7 @@ oc get pods -n openshift-ingress -o wide
 # Expected: 3 router pods running on master nodes
 ```
 
-#### Step 2: Move Registry to Masters
+#### Step A2: Move Registry to Masters
 
 ```bash
 # Patch Image Registry to run on master nodes
@@ -1932,10 +1949,9 @@ oc patch configs.imageregistry.operator.openshift.io/cluster --type=merge \
 
 # Verify
 oc get pods -n openshift-image-registry -o wide
-# Expected: registry pods running on master nodes
 ```
 
-#### Step 3: Move Monitoring Stack to Masters
+#### Step A3: Move Monitoring Stack to Masters
 
 ```bash
 # Create monitoring config with nodeSelector and tolerations
@@ -1962,13 +1978,6 @@ data:
         operator: Exists
         effect: NoSchedule
     prometheusOperator:
-      nodeSelector:
-        node-role.kubernetes.io/master: ""
-      tolerations:
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
-    grafana:
       nodeSelector:
         node-role.kubernetes.io/master: ""
       tolerations:
@@ -2011,28 +2020,174 @@ oc get pods -n openshift-monitoring -w
 oc get pods -n openshift-monitoring -o wide | grep master
 ```
 
-#### Step 4: Move Logging (Loki) to Masters
+**Note:** Grafana was removed in OCP 4.11. Do NOT include `grafana:` in the ConfigMap.
+
+---
+
+### Step B: Move ODF to Master Nodes (Ceph OSD Rolling Replace)
+
+> **Reference:** ODF 4.20 Replacing nodes - Section 2.1.1
+
+This is the most complex step. Move ODF/Ceph OSD from infra01-03 to master01-03, one node at a time.
+
+#### Step B1: Move ODF from infra01 to master01
+
+**B1a. Verify Ceph health**
 
 ```bash
-# Note: Loki is resource hungry (I/O, memory)
-# As of OCP 4.16, it is not possible to set resource limits for Loki
-# Monitor resource usage carefully after migration
-
-# Update Loki nodeSelector to master01
-# (specific patch depends on your Loki configuration)
-
-# Verify
-oc get pods -n openshift-logging -o wide
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph health
+ceph osd status
+exit
 ```
 
-#### Step 5: Move GitOps + Pipelines + Quay to master02
+**B1b. Identify pods on infra01**
+
+```bash
+oc get pods -n openshift-storage -o wide | grep infra01
+```
+
+**B1c. Scale down ODF pods on infra01**
+
+```bash
+# Scale down OSD
+oc scale deployment rook-ceph-osd-0 --replicas=0 -n openshift-storage
+
+# Scale down mon (if mon runs on this node)
+oc scale deployment rook-ceph-mon-c --replicas=0 -n openshift-storage
+
+# Scale down crashcollector
+oc scale deployment --selector=app=rook-ceph-crashcollector,node_name=infra01 --replicas=0 -n openshift-storage
+```
+
+**B1d. Cordon + Drain + Delete infra01**
+
+```bash
+oc adm cordon infra01
+oc adm drain infra01 --force --delete-emptydir-data --ignore-daemonsets
+oc delete node infra01
+```
+
+**B1e. Add ODF label to master01**
+
+```bash
+oc label node master01-bm cluster.ocs.openshift.io/openshift-storage=""
+```
+
+**B1f. Update LocalVolumeDiscovery + LocalVolumeSet**
+
+```bash
+# Find local storage namespace
+local_storage_project=$(oc get csv --all-namespaces | awk '{print $1}' | grep local)
+echo $local_storage_project
+
+# Update LocalVolumeDiscovery (add master01, remove infra01)
+oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
+# nodeSelector values:
+#   - infra02.example.com  # keep
+#   - infra03.example.com  # keep
+#   - master01-bm          # add
+#   #- infra01.example.com # remove
+
+# Update LocalVolumeSet (same)
+oc edit -n $local_storage_project localvolumeset localblock
+# Same changes
+```
+
+**B1g. Verify new PV**
+
+```bash
+oc get pv | grep localblock | grep Available
+# Expected: new Available PV present
+```
+
+**B1h. Wait for Ceph Rebalance**
+
+```bash
+# May take several hours
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph health
+# Wait for HEALTH_OK
+exit
+```
+
+**B1i. Delete old OSD**
+
+```bash
+# Get old OSD ID
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph osd tree
+# Note OSD IDs on infra01
+exit
+
+# Run OSD removal job
+oc process -n openshift-storage ocs-osd-removal \
+  -p FAILED_OSD_IDS=<old-osd-id1>,<old-osd-id2>,<old-osd-id3> | oc create -f -
+
+# Wait for removal job
+oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage -w
+# Wait for Completed
+
+# Delete removal job
+oc delete job ocs-osd-removal-job -n openshift-storage
+```
+
+**B1j. Clean up released PVs and crashcollector**
+
+```bash
+# Delete released PVs
+oc get pv -L kubernetes.io/hostname | grep localblock | grep Released
+oc delete pv <released-pv>
+
+# Delete crashcollector deployment
+oc delete deployment --selector=app=rook-ceph-crashcollector,node_name=infra01 -n openshift-storage
+```
+
+**B1k. Verify ODS on master01**
+
+```bash
+oc get pods -o wide -n openshift-storage | grep master01 | grep osd
+# Expected: new OSD pods running on master01
+```
+
+**B1l. Wait for Stability**
+
+```
+Wait at least 24 hours:
+- Ceph HEALTH_OK
+- All PVCs Bound
+- All ODF pods Running
+- Applications healthy
+```
+
+#### Step B2: Repeat for infra02 -> master02
+
+Repeat Step B1 for infra02 -> master02.
+
+#### Step B3: Repeat for infra03 -> master03
+
+Repeat Step B1 for infra03 -> master03.
+
+---
+
+### Step C: Move Remaining Components to Master Nodes
+
+After ODF is migrated (Step B), move remaining infra components.
+
+#### Step C1: Move GitOps + Pipelines + Quay to master02
 
 ```bash
 # Update ArgoCD nodeSelector and tolerations to master02
+# (modify ArgoCD CR, not Deployment directly)
+
 # Update OpenShift Pipelines nodeSelector and tolerations to master02
+
 # Update Quay nodeSelector and tolerations to master02
+
 # Update Cert Manager nodeSelector and tolerations to master02
+
 # Update OpenTelemetry nodeSelector and tolerations to master02
+
 # Update KEDA nodeSelector and tolerations to master02
 
 # Wait for pods to reschedule
@@ -2040,7 +2195,7 @@ oc get pods -n openshift-gitops -w
 oc get pods -n openshift-pipelines -w
 ```
 
-#### Step 6: Move remaining operators to master03
+#### Step C2: Move remaining operators to master03
 
 ```bash
 # Update Service Mesh nodeSelector and tolerations to master03
@@ -2057,7 +2212,7 @@ oc get pods -n openshift-pipelines -w
 # Wait for pods to reschedule
 ```
 
-#### Step 7: Verify all workloads migrated
+#### Step C3: Verify all workloads migrated
 
 ```bash
 # Verify all infra pods running on master nodes
@@ -2065,27 +2220,19 @@ oc get pods --all-namespaces -o wide | grep master
 
 # Verify no infra pods left on old VM infra nodes
 oc get pods --all-namespaces -o wide | grep infra0
-# Expected: no output (all pods moved)
+# Expected: no output
 
 # Verify all applications healthy
 oc get pods --all-namespaces | grep -v Running | grep -v Completed
 ```
 
-#### Step 8: Cordon + Drain + Delete infra VMs
+---
+
+### Step D: Delete Remaining infra VMs (infra04-06)
 
 ```bash
-# For each infra VM (infra01-06):
-oc cordon infra01
-oc drain infra01 --ignore-daemonsets --delete-emptydir-data
-oc delete node infra01
-
-oc cordon infra02
-oc drain infra02 --ignore-daemonsets --delete-emptydir-data
-oc delete node infra02
-
-oc cordon infra03
-oc drain infra03 --ignore-daemonsets --delete-emptydir-data
-oc delete node infra03
+# infra01-03 already deleted in Step B
+# Delete infra04-06
 
 oc cordon infra04
 oc drain infra04 --ignore-daemonsets --delete-emptydir-data
@@ -2102,32 +2249,7 @@ oc delete node infra06
 # Delete VMs from vCenter
 ```
 
-#### Step 9: Final verification
-
-```bash
-# Verify cluster health
-oc get nodes
-oc get co | grep -v "True.*False.*False"
-
-# Verify etcd healthy
-oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
-etcdctl endpoint health --cluster
-exit
-
-# Verify ODF healthy
-oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
-ceph health
-exit
-
-# Verify monitoring healthy
-oc get pods -n openshift-monitoring | grep -v Running
-
-# Verify all routes normal
-oc get routes --all-namespaces | wc -l
-
-# Verify ArgoCD sync
-oc get applications -n openshift-gitops
-```
+---
 
 ### Phase 3 Acceptance Criteria
 
@@ -2135,7 +2257,7 @@ oc get applications -n openshift-gitops
 - [ ] No infra pods left on old VM nodes
 - [ ] All 6 VMware infra VMs decommissioned
 - [ ] etcd cluster healthy
-- [ ] ODF/Ceph healthy
+- [ ] ODF/Ceph healthy with OSDs on master nodes
 - [ ] Monitoring stack healthy
 - [ ] All 66 routes normal
 - [ ] ArgoCD sync normal
@@ -2145,11 +2267,12 @@ oc get applications -n openshift-gitops
 
 1. **NVMe for ODF** -- Each master must have dedicated NVMe for Ceph OSD, separate from etcd
 2. **Resource planning** -- Verify each master has enough resources before moving workloads
-3. **One operator at a time** -- Move operators one at a time, verify stability before next
+3. **One ODF node at a time** -- Move ODF one node at a time, wait for Ceph HEALTH_OK before next
 4. **Rebalancing** -- Ceph rebalance may take time after OSD migration
 5. **Monitoring** -- Watch for resource pressure on master nodes after workload migration
 6. **Node selector + toleration required** -- Every component must have both nodeSelector and toleration to run on master nodes
-7. **Logging caveat** -- Loki is I/O hungry and cannot have resource limits set (as of OCP 4.16). Monitor carefully.
+7. **Grafana removed** -- Do NOT include `grafana:` in monitoring ConfigMap (removed in OCP 4.11)
+8. **ODF order** -- Complete all ODF node replacements (Step B) before moving other components (Step C)
 
 ## Phase 4: Add 3 More Workers (Optional)
 
