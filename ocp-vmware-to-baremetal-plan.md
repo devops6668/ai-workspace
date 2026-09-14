@@ -4,7 +4,7 @@
 **Date:** 2026-08-10 (updated 2026-09-14 v5)  
 **Cluster:** lab.devops.local (OCP 4.20.27)  
 **Platform:** BareMetal (platform: none)  
-**Status:** Part 1 reviewed, Part 2 ready to execute  
+**Status:** Part 1 reviewed, Part 2 ready to execute (4-phase plan)  
 **Red Hat Articles:**
 - https://access.redhat.com/solutions/5020331 (mixed virtual/bare metal support)
 - https://access.redhat.com/solutions/7061543 (Hyper-V support)
@@ -63,29 +63,40 @@ This plan migrates an existing OCP 4.20.27 cluster from VMware VMs to bare metal
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  VMware (3 VMs) — Phase 2 replaces these               │
-│  master01: etcd, API server, control plane              │
-│  master02: etcd, API server, control plane              │
-│  master03: etcd, API server, control plane              │
+│  Final State: All Bare Metal (12 nodes)                 │
 ├─────────────────────────────────────────────────────────┤
-│  Bare Metal (9 nodes, all worker role)                  │
-│                                                         │
-│  Phase 1a: Worker VM → BM                               │
+│  Master Nodes x 3 (bare metal)                          │
+│  master01 (12CPU/64GB + NVMe):                          │
+│    etcd, API server, control plane                      │
+│    ODF/Ceph OSD (NVMe dedicated disk)                   │
+│    Monitoring stack (Prometheus, Alertmanager, Thanos)   │
+│    Loki, Tempo, Jaeger                                  │
+│  master02 (12CPU/64GB + NVMe):                          │
+│    etcd, API server, control plane                      │
+│    ODF/Ceph OSD (NVMe dedicated disk)                   │
+│    GitOps (ArgoCD), Pipelines (Tekton)                  │
+│    Quay registry                                        │
+│  master03 (12CPU/64GB + NVMe):                          │
+│    etcd, API server, control plane                      │
+│    ODF/Ceph OSD (NVMe dedicated disk)                   │
+│    Service Mesh, Elasticsearch ECK                      │
+│    ACM, Multicluster Engine                             │
+│    NeuVector/Aqua/RHACS, Cert Manager                   │
+│    Confluent (Kafka), CloudNativePG                     │
+│    DevWorkspace, Web Terminal                           │
+│    Kasten K10, OpenTelemetry, KEDA                      │
+├─────────────────────────────────────────────────────────┤
+│  Worker Nodes x 6 (bare metal)                          │
 │  worker01 (8CPU/32GB): Apps + TopoLVM                   │
 │  worker02 (8CPU/32GB): Apps + TopoLVM                   │
 │  worker03 (32CPU/128GB): Apps + TopoLVM                 │
-│                                                         │
-│  Phase 1b: ODF VM → BM (Ceph OSD rolling replace)      │
-│  bm-storage01 (14CPU/32GB): Ceph OSD                    │
-│  bm-storage02 (14CPU/32GB): Ceph OSD                    │
-│  bm-storage03 (14CPU/32GB): Ceph OSD                    │
-│                                                         │
-│  Phase 1c: Monitoring/Other VM → BM                     │
-│  bm-infra01 (16CPU/64GB): Monitoring, Quay              │
-│  bm-infra02 (16CPU/64GB): Monitoring, Egress            │
-│  bm-infra03 (16CPU/64GB): Monitoring, Egress            │
+│  worker04 (16CPU/64GB): Apps + TopoLVM                  │
+│  worker05 (16CPU/64GB): Apps + TopoLVM                  │
+│  worker06 (16CPU/64GB): Apps + TopoLVM                  │
 └─────────────────────────────────────────────────────────┘
 ```
+
+**Note:** Each master node has a dedicated NVMe disk for ODF/Ceph OSD, separate from etcd storage. This eliminates I/O contention between etcd and Ceph.
 
 
 ## Phase Overview
@@ -987,7 +998,7 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 ---
 
 
-## Phase 1a: Workers VM → BM
+## Phase 1: Workers VM → BM
 
 > **Risk: LOW | Time: 1-2 weeks | Method: cordon/drain/replace**
 
@@ -1049,51 +1060,61 @@ After workers are migrated, you could ALSO migrate infra04-06 (monitoring/quay/e
 ---
 
 
-## Phase 1b: ODF VM → BM (Ceph OSD Rolling Replace)
+## Phase 2: Infra VM → BM (ODF + Monitoring)
 
-> **Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove (add first, remove later)**
+> **Risk: MEDIUM | Time: 2-3 weeks | Method: add-then-remove (ODF) + cordon/drain (Monitoring)**
+
+### Overview
+
+Replace infra01-06 VMware VMs with bare metal nodes. Split into two sub-phases:
+- **Phase 2a:** ODF/Ceph storage nodes (infra01-03) — Ceph OSD rolling replace
+- **Phase 2b:** Monitoring/other infra nodes (infra04-06) — cordon/drain/replace
+
+### Phase 2a: ODF VM → BM (Ceph OSD Rolling Replace)
+
+> **Risk: MEDIUM | Time: 1-2 weeks | Method: add-then-remove**
 > **Reference:** ODF 4.20 Replacing nodes — Section 2.1.1 "Replacing an operational node on bare metal user-provisioned infrastructure"
 
-### Phase 1b Concept
+#### Phase 2a Concept
 
 ```
-Each time add a new BM storage node → wait for Ceph rebalance → remove old VM storage node
+Add new BM storage node → wait for Ceph rebalance → remove old VM storage node
 Repeat 3 times (infra01→bm-storage01, infra02→bm-storage02, infra03→bm-storage03)
 ```
 
 **Reason for add-then-remove:** Ceph always has sufficient OSDs, data availability is not affected.
 
-### Phase 1b Prerequisites
-- [ ] 3 BM storage servers ready (14 CPU, 32GB + local SSD for Ceph OSD)
+#### Phase 2a Prerequisites
+- [ ] 3 BM storage machines ready (14 CPU, 32GB + local SSD for Ceph OSD)
 - [ ] New BM disk size/type matches old infra
 - [ ] RHCOS ISO ready
 - [ ] Network connectivity (same VLAN)
-- [ ] DNS forward/reverse resolution normal
-- [ ] BMC/IPMI accessible
-- [ ] Phase 1a completed (3 BM workers in place)
+- [ ] DNS forward/reverse resolution working
+- [ ] BMC/IPMI available
+- [ ] Phase 1 completed (3 BM workers in place)
 - [ ] Ceph cluster healthy (`ceph health` = HEALTH_OK)
 
-### Each Storage Node Replacement Steps (repeat 3 times, one at a time)
+#### Each Storage Node Replacement Steps (repeat 3 times, one at a time)
 
-#### Step A1: Add new BM storage node to cluster
+##### Step A1: Add new BM storage node to cluster
 ```bash
-# install RHCOS + join cluster as worker
-# approve CSR
-# wait for node Ready
+# Install RHCOS + join cluster as worker
+# Approve CSR
+# Wait for node Ready
 ```
 
-#### Step A2: Add ODF label to new node
+##### Step A2: Add ODF label to new node
 ```bash
 oc label node <new-bm-storage> cluster.ocs.openshift.io/openshift-storage=""
 ```
 
-#### Step A3: Update LocalVolumeDiscovery + LocalVolumeSet (add new node, keep old node)
+##### Step A3: Update LocalVolumeDiscovery + LocalVolumeSet (add new node, keep old node)
 ```bash
-# find local storage namespace
+# Find local storage namespace
 local_storage_project=$(oc get csv --all-namespaces | awk '{print $1}' | grep local)
 echo $local_storage_project
 
-# update LocalVolumeDiscovery (add new node, keep all old nodes)
+# Update LocalVolumeDiscovery (add new node, keep all old nodes)
 oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
 # nodeSelector values add new node:
 #   - infra01.example.com  # keep
@@ -1101,31 +1122,31 @@ oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
 #   - infra03.example.com  # keep
 #   - <new-bm-storage>     # add
 
-# update LocalVolumeSet (also add new node)
+# Update LocalVolumeSet (same - add new node)
 oc get -n $local_storage_project localvolumeset
 oc edit -n $local_storage_project localvolumeset localblock
-# also add new node
+# Add new node
 ```
 
-#### Step A4: Confirm new PVs appear
+##### Step A4: Verify new PV appeared
 ```bash
 oc get pv | grep localblock | grep Available
-# Expected: new Available PVs present
+# Expected: new Available PV present
 ```
 
-#### Step A5: Wait for Ceph Rebalance + healthy
+##### Step A5: Wait for Ceph Rebalance + health
 ```bash
 # ⚠️ Wait for Ceph healthy before continuing (may take several hours)
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph health
-# wait for HEALTH_OK
+# Wait for HEALTH_OK
 ceph osd tree
 exit
 ```
 
-#### Step B1: Scale down ODF pods on old node
+##### Step B1: Scale down ODF pods on old node
 ```bash
-# identify ODF pods on old node
+# Identify ODF pods on old node
 oc get pods -n openshift-storage -o wide | grep -i <old-infra>
 
 # Scale down mon (if mon runs on this node)
@@ -1138,87 +1159,87 @@ oc scale deployment rook-ceph-osd-0 --replicas=0 -n openshift-storage
 oc scale deployment --selector=app=rook-ceph-crashcollector,node_name=<old-infra> --replicas=0 -n openshift-storage
 ```
 
-#### Step B2: Delete old OSD
+##### Step B2: Delete old OSD
 ```bash
-# confirm old OSD ID
+# Verify old OSD ID
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph osd tree
-# note down OSD IDs on old infra
+# Note old OSD IDs on infra node
 exit
 
-# run OSD removal job
+# Run OSD removal job
 oc process -n openshift-storage ocs-osd-removal \
   -p FAILED_OSD_IDS=<old-osd-id1>,<old-osd-id2>,<old-osd-id3> | oc create -f -
 
-# wait for removal job to complete
+# Wait for removal job to complete
 oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage -w
-# wait for Completed
+# Wait for Completed
 
-# delete removal job
+# Delete removal job
 oc delete job ocs-osd-removal-job -n openshift-storage
 ```
 
-#### Step B3: Update LocalVolumeDiscovery + LocalVolumeSet (remove old node)
+##### Step B3: Update LocalVolumeDiscovery + LocalVolumeSet (remove old node)
 ```bash
-# update LocalVolumeDiscovery (remove old node)
+# Update LocalVolumeDiscovery (remove old node)
 oc edit -n $local_storage_project localvolumediscovery auto-discover-devices
 # nodeSelector values remove old node
 
-# update LocalVolumeSet (also remove old node)
+# Update LocalVolumeSet (same - remove old node)
 oc edit -n $local_storage_project localvolumeset localblock
-# also remove old node
+# Remove old node
 ```
 
-#### Step B4: Cordon + Drain + delete old VM
+##### Step B4: Cordon + Drain + Delete old VM
 ```bash
 oc adm cordon <old-infra>
 oc adm drain <old-infra> --force --delete-emptydir-data --ignore-daemonsets
 oc delete node <old-infra>
 ```
 
-#### Step B5: verify
+##### Step B5: Verify
 ```bash
-# confirm Ceph healthy
+# Verify Ceph health
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph health
 ceph osd tree
 exit
 
-# confirm all ODF pods normal
+# Verify all ODF pods normal
 oc get pods -n openshift-storage | grep -v Running
 
-# confirm CSI driver normal
+# Verify CSI driver normal
 oc get pods -n openshift-storage | grep csi
 
-# confirm StorageClass normal
+# Verify StorageClass normal
 oc get sc
 
-# confirm PVC normal
+# Verify PVC normal
 oc get pvc --all-namespaces | grep -v Bound
 ```
 
-#### Step B6: Wait for Ceph Rebalance to complete
+##### Step B6: Wait for Ceph Rebalance to complete
 ```bash
 # ⚠️ May take several hours
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
 ceph -s
-# wait for "recovery" or "backfill" to complete
-# wait for ceph health to become HEALTH_OK
+# Wait for "recovery" or "backfill" to complete
+# Wait for ceph health to become HEALTH_OK
 exit
 ```
 
-#### Step B7: Wait for Stability
+##### Step B7: Wait for Stability
 ```
-⚠️ Wait at least 24 hours to observe stability, confirm:
+⚠️ Wait at least 24 hours to observe stability:
 - Ceph HEALTH_OK
 - All PVCs Bound
 - All ODF pods Running
-- Applications normal
+- Applications healthy
 ```
 
-#### Repeat Step A1-B7 (infra02→bm-storage02, infra03→bm-storage03)
+##### Repeat Step A1-B7 (infra02→bm-storage02, infra03→bm-storage03)
 
-### Phase 1b Acceptance Criteria
+#### Phase 2a Acceptance Criteria
 - [ ] 3 BM storage nodes Ready
 - [ ] Ceph HEALTH_OK
 - [ ] All OSDs normal
@@ -1227,81 +1248,80 @@ exit
 - [ ] All ODF pods Running
 - [ ] All CSI driver pods Running
 
-### Phase 1b ⚠️ Important Notes
-1. **Replace only one node at a time** — don't replace multiple simultaneously
-2. **Wait for Ceph HEALTH_OK** — after each replacement wait for rebalance to complete before proceeding
-3. **Disk specifications must match** — new BM disk size/type must match old infra
-4. **Rebalance time** — depends on data volume, may take several hours
-5. **I/O Impact** — significant background I/O during rebalance
-6. **Scale down sequence** — first scale down ODF pods, then cordon/drain
+#### Phase 2a ⚠️ Important Notes
+1. **Replace only one node at a time** — Do not replace multiple simultaneously
+2. **Wait for Ceph HEALTH_OK** — Wait for rebalance to complete before next node
+3. **Disk specifications must match** — New BM disk size/type must match old infra
+4. **Rebalance time** — Depends on data volume, may take several hours
+5. **I/O impact** — Significant background I/O during rebalance
+6. **Scale down sequence** — Scale down ODF pods first, then cordon/drain
 
 ---
 
-
-## Phase 1c: Monitoring/Other VM → BM
+### Phase 2b: Monitoring/Other VM → BM
 
 > **Risk: LOW | Time: 3-5 days | Method: cordon/drain/replace + nodeSelector update**
 
-### Phase 1c Concept
+#### Phase 2b Concept
 
 ```
 infra04-06 (VM) → bm-infra01-03 (BM)
 Monitoring, Quay, Egress components follow nodeSelector migration
 ```
 
-### Phase 1c Prerequisites
-- [ ] 3 BM infra servers ready (16 CPU, 64GB)
+#### Phase 2b Prerequisites
+- [ ] 3 BM infra machines ready (16 CPU, 64GB)
 - [ ] RHCOS ISO ready
 - [ ] Network connectivity (same VLAN)
-- [ ] Phase 1a + 1b completed
+- [ ] Phase 1 + 2a completed
 
-### Each Infra Node Replacement Steps (repeat 3 times)
+#### Each Infra Node Replacement Steps (repeat 3 times)
 
-#### Step C1: Add new BM infra node to cluster
+##### Step C1: Add new BM infra node to cluster
 ```bash
-# install RHCOS + join cluster as worker
-# approve CSR
-# wait for node Ready
+# Install RHCOS + join cluster as worker
+# Approve CSR
+# Wait for node Ready
 ```
 
-#### Step C2: Update monitoring/quoter/egress nodeSelector
+##### Step C2: Update monitoring/quoter/egress nodeSelector
 ```bash
-# update OpenShift Monitoring stack nodeSelector
-# change Prometheus/Alertmanager/Thanos nodeSelector to point to new BM node
+# Update OpenShift Monitoring stack nodeSelector
+# Change Prometheus/Alertmanager/Thanos nodeSelector to point to new BM node
 
-# update Quay nodeSelector (if applicable)
+# Update Quay nodeSelector (if applicable)
 
-# update Egress nodeSelector (if applicable)
+# Update Egress nodeSelector (if applicable)
 ```
 
-#### Step C3: Cordon + Drain old VM
+##### Step C3: Cordon + Drain old VM
 ```bash
 oc adm cordon <old-infra>
 oc adm drain <old-infra> --force --delete-emptydir-data --ignore-daemonsets
 ```
 
-#### Step C4: Delete old VM
+##### Step C4: Delete old VM
 ```bash
 oc delete node <old-infra>
-# delete VM from vCenter
+# Delete VM from vCenter
 ```
 
-#### Step C5: verify
+##### Step C5: Verify
 ```bash
-# confirm monitoring stack normal
+# Verify monitoring stack normal
 oc get pods -n openshift-monitoring
 
-# confirm Quay normal (if applicable)
+# Verify Quay normal (if applicable)
 
-# confirm Egress normal
+# Verify Egress normal
 
-# confirm all pods normal
+# Verify all pods normal
 oc get pods --all-namespaces | grep -v Running | grep -v Completed
 ```
 
-#### Repeat Step C1-C5 (infra05→bm-infra02, infra06→bm-infra03)
+##### Repeat Step C1-C5 (infra05→bm-infra02, infra06→bm-infra03)
 
-### Phase 1c Acceptance Criteria
+#### Phase 2b Acceptance Criteria
 - [ ] 3 BM infra nodes Ready
 - [ ] Monitoring stack normal (Prometheus, Alertmanager, Thanos)
 - [ ] Quay normal
@@ -1310,73 +1330,6 @@ oc get pods --all-namespaces | grep -v Running | grep -v Completed
 - [ ] All alerts normal
 
 ---
-
-
-## Phase 2: Masters VM → BM (Plan B)
-
-### Phase 2: Masters VM → BM (Plan B)
-
-> **Updated 2026-09-14 (v3)**: Based on expert review + OCP 4.20 official documentation correction.
-> - Core correction: delete Machine object Triggers etcd Operator automatic member removal, no more manual `etcdctl member remove`
-> - Added: etcd Secrets cleanup, HAProxy backend update, etcd Quorum Guard explanation, CSR monitor script, stability Acceptance Criteria
-
-#### Prerequisites
-- [ ] 3 BM servers ready (12 CPU, 64GB each)
-- [ ] RHCOS ISO ready (matching OCP version 4.20.27)
-- [ ] Network connectivity (same VLAN)
-- [ ] DNS forward/reverse resolution normal
-- [ ] BMC/IPMI accessible
-- [ ] HTTP server ready to host ignition config (master.ign)
-- [ ] HAProxy backend configured (able to add new BM node IP)
-- [ ] Verify no ControlPlaneMachineSet: `oc get controlplanemachineset -n openshift-machine-api`
-- [ ] Extract master Ignition config: `oc extract -n openshift-machine-api secret/master-user-data-managed --keys=userData --to=- > master.ign`
-- [ ] Open a terminal to run CSR monitor: `watch -n 5 'oc get csr | grep Pending'`
-
-#### Each Node (repeat 3 times, one at a time)
-
-##### Node 1: master01 → BM
-- [ ] Pre-check: cluster healthy, etcd healthy (3 members), no CPMS
-- [ ] Backup etcd (using official backup script)
-- [ ] Prepare BMC Secret + BareMetalHost + Machine object
-- [ ] Wait for BMH status to become available
-- [ ] install RHCOS on BM server
-- [ ] approve CSR (manual or auto script)
-- [ ] wait for node Ready
-- [ ] wait for etcd Operator to automatically add new member (~5-10 minutes)
-- [ ] confirm etcd cluster has 4 members all healthy
-- [ ] Update HAProxy: add new BM node IP to backend
-- [ ] Cordon + drain old VM
-- [ ] delete old Machine object (Triggers etcd Operator automatic member removal)
-- [ ] delete old BMH object
-- [ ] Clean up old node etcd TLS secrets
-- [ ] Force etcd redeployment
-- [ ] Update HAProxy: remove old VM IP
-- [ ] Update DNS (if needed)
-- [ ] Verify: etcd 3 members healthy, all CO normal, all nodes Ready
-- [ ] wait 24 hours to observe stability
-
-##### Node 2: master02 → BM
-(same as above)
-
-##### Node 3: master03 → BM
-(same as above)
-
-#### Phase 2 Post-completion Verification
-- [ ] All 6 nodes Ready (3 masters + 3 workers all BM)
-- [ ] etcd cluster healthy (3 members)
-- [ ] ODF healthy
-- [ ] All 65 operators normal
-- [ ] All 66 routes normal
-- [ ] All 108 network policies normal
-- [ ] ArgoCD sync normal
-- [ ] Monitoring normal
-- [ ] remove old VMware master VMs
-- [ ] Adjust VMware license (12 → 6)
-
----
-
-
-## Phase 2: Control Plane Migration (Plan B - One-by-one Replacement)
 
 > **Updated 2026-09-14 (v3)**: Based on expert review + OCP 4.20 official documentation correction.
 > - Core correction: delete Machine object Triggers etcd Operator automatic member removal, no more manual `etcdctl member remove`
@@ -1410,7 +1363,7 @@ oc extract -n openshift-machine-api secret/master-user-data-managed \
   --keys=userData --to=- > master.ign
 ```
 
-### CSR Monitoring Script (keep a terminal running throughout Phase 2)
+### CSR Monitoring Script (keep a terminal running throughout Phase 3)
 ```bash
 watch -n 5 'oc get csr | grep Pending'
 ```
@@ -1539,7 +1492,7 @@ oc get csr | grep Pending
 oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | \
   xargs oc adm certificate approve
 
-# Method 2: Auto-approval script (run in a terminal throughout Phase 2)
+# Method 2: Auto-approval script (run in a terminal throughout Phase 3)
 while true; do
   PENDING=$(oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}')
   if [ -n "$PENDING" ]; then
@@ -1678,18 +1631,18 @@ oc get routes --all-namespaces | wc -l
 - [ ] Monitoring system no new alerts (especially etcd-related)
 - [ ] Wait at least 24 hours to observe stability
 
-### ⚠️ Phase 2 Risk Reminders
+### ⚠️ Phase 3 Risk Reminders
 1. **Replace only one at a time** — wait for etcd to fully stabilize before proceeding (recommend waiting 24 hours)
 2. **3 control planes = tolerate 1 failure** — if another fails during replacement, cluster will have issues
 3. **Schedule maintenance window** — etcd will have brief instability during replacement (during force redeployment)
-4. **CSR approval** — use auto-approval script (run in a terminal throughout Phase 2)
+4. **CSR approval** — use auto-approval script (run in a terminal throughout Phase 3)
 5. **Time estimate** — each node approximately 2-3 hours (excluding 24-hour stability observation)
 6. **HAProxy update** — must be updated promptly during steps, otherwise API requests will be routed to removed old VM
 7. **DNS** — need to update control plane node DNS records
 8. **etcd Quorum Guard** — allows drain with 4 CP nodes, blocks with 3 (protection mechanism)
 9. **etcd Secrets** — old node TLS secrets must be cleaned up to avoid Operator alerts
 
-### Phase 2 Command Quick Reference
+### Phase 3 Command Quick Reference
 ```bash
 # Verify cluster health
 oc get nodes && oc get co | grep -v "True.*False.*False"
@@ -1720,188 +1673,459 @@ exit
 ---
 
 
-## Bare Metal Network Configuration (NIC Bonding)
+## Phase 3: Masters VM → BM (etcd Replacement)
 
-VMware has vSwitch for NIC teaming, bare metal requires self-configured bonding. OCP bare metal has three methods for configuring bonding:
+> **Risk: MEDIUM-HIGH | Time: 2-3 weeks | Method: delete Machine triggers etcd auto-remove**
+> **Reference:** OCP 4.20 "Replacing a healthy etcd member by scaling up and scaling down"
 
-### Bonding Method Selection
+### Why Choose Plan B (One-by-one Replacement)
+- No need to reinstall ODF, operators, routes, ArgoCD, etc.
+- Cluster remains operational throughout
+- Only etcd member replacement one at a time
+- Core method corresponds to Red Hat official documentation: "Replacing a healthy etcd member by scaling up and scaling down"
 
-| Timing | Method | Use Case | No Operator Install Needed |
-|------|------|----------|----------------|
-| During install | Kernel argument `bond=` | Simplest, initramfs stage | ✅ |
-| During install | NMState YAML + Ignition | Official Recommended, full control | ✅ |
-| After install | MachineConfig + NMState | Existing cluster migration | ✅ |
+### etcd Quorum Guard Explanation
+etcd Quorum Guard is a protection mechanism that blocks drain operations if drain would cause etcd quorum loss. During the 4 CP node transition period, Quorum Guard allows draining the old node (because there are still enough etcd members). However, if you attempt to force drain one of only 3 CP nodes, Quorum Guard will block it. This is a protection mechanism, not an error.
 
-**Important: No need to install Kubernetes NMState Operator.**
-NMState Operator can only manage secondary NICs, not the br-ex bridge.
-Your bonding needs can be satisfied with MachineConfig alone.
+### Prerequisites
+- [ ] 3 BM machines ready (12 CPU, 64GB each)
+- [ ] RHCOS ISO ready (matching OCP version 4.20.27)
+- [ ] Network connectivity (same VLAN)
+- [ ] DNS forward/reverse resolution working
+- [ ] BMC/IPMI available
+- [ ] HTTP server ready for ignition config (master.ign)
+- [ ] HAProxy backend configured (can add new BM node IP)
+- [ ] Verify no ControlPlaneMachineSet: `oc get controlplanemachineset -n openshift-machine-api`
+- [ ] Extract master Ignition config: `oc extract -n openshift-machine-api secret/master-user-data-managed --keys=userData --to=- > master.ign`
+- [ ] Keep a CSR monitoring terminal running: `watch -n 5 'oc get csr | grep Pending'`
 
-### Method 1: Kernel Argument (simplest during install)
+### Steps (repeat 3 times, one node at a time)
 
-When booting from RHCOS ISO, add `bond=` parameter to kernel command line:
-
-```
-# DHCP mode
-bond=bond0:em1,em2:mode=active-backup
-ip=bond0:dhcp
-nameserver=192.168.89.61
-
-# Static IP mode
-bond=bond0:em1,em2:mode=active-backup
-ip=192.168.89.50::192.168.89.1:255.255.255.0:worker01.baremetal.bond:bond0:none
-```
-
-- `bond0` = bonding device name
-- `em1,em2` = physical NICs (use `ip link` to query actual names)
-- `mode=active-backup` = active-backup (safest, no switch config needed)
-- ⚠️ Only controls initramfs stage, br-ex needs separate configuration later
-
-### Method 2: NMState YAML + Ignition (official method during install)
-
-Create NMState YAML → base64 → place in ignition config:
-
-```yaml
-interfaces:
-  # Physical NIC 1
-  - name: eno1
-    type: ethernet
-    state: up
-    ipv4:
-      enabled: false
-    ipv6:
-      enabled: false
-
-  # Physical NIC 2
-  - name: eno2
-    type: ethernet
-    state: up
-    ipv4:
-      enabled: false
-    ipv6:
-      enabled: false
-
-  # Bond interface
-  - name: bond0
-    type: bond
-    state: up
-    copy-mac-from: eno1
-    ipv4:
-      enabled: true
-      dhcp: true
-    link-aggregation:
-      mode: active-backup
-      port:
-        - eno1
-        - eno2
-
-  # OVS Bridge (OVN-Kubernetes br-ex)
-  - name: br-ex
-    type: ovs-bridge
-    state: up
-    ipv4:
-      enabled: false
-    bridge:
-      options:
-        mcast-snooping-enable: true
-      port:
-        - name: bond0
-        - name: br-ex
-
-  # OVS Interface (br-ex internal port)
-  - name: br-ex
-    type: ovs-interface
-    state: up
-    copy-mac-from: eno1
-    ipv4:
-      enabled: true
-      dhcp: true
-      auto-route-metric: 48
-```
-
-Base64 encode and place in ignition:
-
+#### Step 1: Pre-check + Backup etcd (required before every operation!)
 ```bash
-cat br-ex-public.yaml | base64 -w 0
+# 1a. Verify cluster health
+oc get nodes
+oc get co | grep -v "True.*False.*False"
+
+# 1b. Verify etcd healthy (3 members, all healthy)
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl member list -w table
+etcdctl endpoint health --cluster
+exit
+
+# 1c. Verify no ControlPlaneMachineSet
+oc get controlplanemachineset -n openshift-machine-api
+
+# 1d. Backup etcd (using official backup script)
+oc exec -n openshift-etcd \
+  $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
+  /usr/local/bin/cluster-backup.sh /home/core/assets/backup
+
+# 1e. Verify backup
+oc exec -n openshift-etcd \
+  $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
+  ls -la /home/core/assets/backup/
 ```
 
-### Method 3: MachineConfig (after install / existing cluster)
-
-Use MachineConfig to push NMState YAML to `/etc/nmstate/openshift/<node>.yml`:
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
+#### Step 2: Create BareMetalHost + Machine object
+```bash
+# Create BMC Secret
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
 metadata:
-  labels:
-    machineconfiguration.openshift.io/role: worker
-  name: 10-br-ex-worker01
+  name: master-bm-<N>-bmc-secret
+  namespace: openshift-machine-api
+type: Opaque
+data:
+  username: $(echo -n '<bmc_user>' | base64)
+  password: $(echo -n '<bmc_pass>' | base64)
+EOF
+
+# Create BareMetalHost
+cat <<EOF | oc apply -f -
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: master-bm-<N>
+  namespace: openshift-machine-api
 spec:
-  config:
-    ignition:
-      version: 3.2.0
-    storage:
-      files:
-        - contents:
-            source: data:text/plain;charset=utf-8;base64,<base64_encoded_nmstate>
-          mode: 0644
-          overwrite: true
-          path: /etc/nmstate/openshift/worker01.yml
+  automatedCleaningMode: disabled
+  bmc:
+    address: idrac-virtualmedia://<bmc_ip>/redfish/v1/Systems/System.Embedded.1
+    credentialsName: master-bm-<N>-bmc-secret
+    disableCertificateVerification: true
+  bootMACAddress: "<NIC_MAC>"
+  bootMode: UEFI
+  externallyProvisioned: false
+  online: true
+EOF
+
+# Wait for BMH status to become available
+oc get bmh -n openshift-machine-api master-bm-<N> -w
 ```
 
-Apply and reboot:
+#### Step 3: Install RHCOS to BM machine
+```bash
+# ⚠️ If BMH is configured with Redfish Virtual Media (BMC/IPMI available),
+# RHCOS installation is handled automatically by Bare Metal Operator (externallyProvisioned: false), Step 3 can be skipped.
+# Step 3 is only for scenarios without BMC support, requiring manual USB/ISO insertion.
+
+# Manual installation method (only when BMC is unavailable):
+# Method 1: coreos-installer (boot from ISO)
+sudo coreos-installer install /dev/sda \
+    --ignition-url=http://<http_server>/master.ign \
+    --insecure-ignition \
+    --platform=metal
+
+# Method 2: Use ISO + Ignition directly
+# Place master.ign in ISO or use PXE boot
+```
+
+#### Step 4: Create Machine object and join cluster
+```bash
+# Create Machine object (copy providerSpec from another control plane Machine)
+cat <<EOF | oc apply -f -
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  annotations:
+    metal3.io/BareMetalHost: openshift-machine-api/master-bm-<N>
+  labels:
+    machine.openshift.io/cluster-api-cluster: <cluster-name>
+    machine.openshift.io/cluster-api-machine-role: master
+    machine.openshift.io/cluster-api-machine-type: master
+  name: <cluster-name>-master-bm-<N>
+  namespace: openshift-machine-api
+spec:
+  metadata: {}
+  providerSpec:
+    value:
+      apiVersion: baremetal.cluster.k8s.io/v1alpha1
+      customDeploy:
+        method: install_coreos
+      hostSelector: {}
+      image:
+        checksum: ""
+        url: ""
+      kind: BareMetalMachineProviderSpec
+      metadata:
+        creationTimestamp: null
+      userData:
+        name: master-user-data-managed
+EOF
+```
 
 ```bash
-oc apply -f 10-br-ex-worker01.yaml
-# Node will automatically reboot to apply configuration
+# Approve CSRs (new node produces client + server CSRs)
+# Method 1: Manual approval
+oc get csr | grep Pending
+oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | \
+  xargs oc adm certificate approve
+
+# Method 2: Auto-approval script (keep running throughout Phase 3)
+while true; do
+  PENDING=$(oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}')
+  if [ -n "$PENDING" ]; then
+    echo "$PENDING" | xargs oc adm certificate approve
+    echo "$(date): Approved CSRs"
+  fi
+  sleep 10
+done
+
+# Wait for node Ready
+oc get nodes -w
+# Wait for <cluster-name>-master-bm-<N> to become Ready
 ```
 
-### Bonding Mode Selection
-
-| Mode | Name | Switch Config | Redundancy | Load Balance |
-|------|------|---------------|------------|--------------|
-| 1 | active-backup | Not needed | ✅ | ❌ |
-| 2 | balance-xor | Required | ✅ | ✅ (XOR) |
-| 4 | 802.3ad (LACP) | Requires LACP | ✅ | ✅ (best) |
-| 6 | balance-alb | Not needed | ✅ | ✅ (ALB) |
-
-Recommendations:
-- Switch without LACP → mode 1 (active-backup)
-- Switch with LACP → mode 4 (802.3ad)
-
-### Verify Bonding
-
+#### Step 5: Wait for etcd Operator to auto-add new member + HAProxy update
 ```bash
-# check bond status
-oc debug node/<node> -- chroot /host cat /proc/net/bonding/bond0
+# ⚠️ Important: etcd Operator automatically detects new control plane node
+# and automatically adds new node to etcd cluster, no manual patch or etcdctl member add needed
+# Wait approximately 5-10 minutes
 
-# check OVS bridge
-oc debug node/<node> -- chroot /host ovs-vsctl show
+# ⚠️ Critical wait step: Must see 4 members all "is healthy" before continuing
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl member list -w table
 
-# check nmstate
-oc debug node/<node> -- chroot /host nmstatectl show bond0
+# Expected output: 4 members (3 old + 1 new)
+# +------------------+---------+---------+---------------------------+---------------------------+------------+
+# |        ID        | STATUS  |  NAME   |        PEER ADDRS        |       CLIENT ADDRS        |  IS LEARNER |
+# +------------------+---------+---------+---------------------------+---------------------------+------------+
+# | <id1>            | started | master01| https://192.168.x.x:2380  | https://192.168.x.x:2379  |      false |
+# | <id2>            | started | master02| https://192.168.x.x:2380  | https://192.168.x.x:2379  |      false |
+# | <id3>            | started | master03| https://192.168.x.x:2380  | https://192.168.x.x:2379  |      false |
+# | <id4>            | started | new-bm  | https://192.168.x.x:2380  | https://192.168.x.x:2379  |      false |
+# +------------------+---------+---------+---------------------------+---------------------------+------------+
+
+# Verify all etcd members healthy
+etcdctl endpoint health --cluster
+# Expected: 4 endpoints all "is healthy"
+exit
+
+# Update HAProxy: add new BM node IP to backend
+# Add new node to HAProxy config:
+#   backend openshift-api-server
+#   backend machine-config-server
+# Then reload HAProxy
+# systemctl reload haproxy
 ```
 
-### Rollback
-
-If bonding configuration fails:
-
+#### Step 6: Remove Old VM — Cordon + Drain + Delete Machine (triggers automatic etcd removal)
 ```bash
-# Method 1: Delete NMState configuration
-oc debug node/<node> -- chroot /host rm /etc/nmstate/openshift/<node>.yml
-oc debug node/<node> -- chroot /host systemctl restart NetworkManager
+# ⚠️ Important: Cordon/drain first, then delete Machine object
+# Deleting Machine triggers etcd Operator automatic member removal
+# No need to manually run etcdctl member remove
 
-# Method 2: Delete MachineConfig (from another working node)
-oc delete machineconfig 10-br-ex-worker01
-# Triggers reboot to apply
+# 6a. Cordon old VM node (stop new Pod scheduling)
+oc adm cordon <old-vm-master-name>
+
+# 6b. Drain old VM node (evict Pods)
+# Note: etcd Quorum Guard allows this operation at 4 CP nodes
+oc adm drain <old-vm-master-name> \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --force
+
+# 6c. Delete old VM Machine object
+# ⚠️ This step triggers etcd Operator automatic member removal
+# No need to manually run etcdctl member remove
+oc delete machine <old-vm-machine-name> -n openshift-machine-api
+
+# 6d. Delete old VM BMH object
+oc delete bmh <old-vm-bmh-name> -n openshift-machine-api
+
+# 6e. Wait for Node object to auto-delete (triggered by Machine deletion)
+oc get nodes -w
 ```
 
-### ⚠️ Bonding Important Notes
+#### Step 7: Clean etcd Secrets + Force Redeployment + Verify
+```bash
+# 7a. Clean up old node etcd TLS secrets
+# After removing old node, clean up its etcd secrets to avoid etcd Operator alerts
+oc get secrets -n openshift-etcd | grep <old-vm-master-name>
+# Should see:
+# etcd-peer-<old-master-name>
+# etcd-serving-<old-master-name>
+# etcd-serving-metrics-<old-master-name>
 
-1. **NIC names must be correct** — use `ip link` to confirm actual NIC names (eno1/eno2/em1/em2/ens160 etc.)
-2. **MAC address** — bond interface recommends using `copy-mac-from` to copy MAC from one of the NICs
-3. **auto-route-metric: 48** — ensures br-ex default route has highest priority
-4. **Configure on every BM server** — don't just configure one, all 3 workers need it
-5. **Test failover** — after installation, unplug a network cable to test bonding failover
+oc get secrets -n openshift-etcd | grep <old-vm-master-name> | \
+  awk '{print $1}' | xargs oc -n openshift-etcd delete secrets
+
+# 7b. Force etcd Operator to redeploy all etcd pods (ensure configuration consistency)
+# ⚠️ Force redeployment causes rolling restart, which is normal (2 of 3 members remain healthy, quorum unaffected)
+# Wait for all etcd pods to become Running before proceeding to Step 8 verification
+oc patch etcd cluster \
+  -p='{"spec": {"forceRedeploymentReason": "master-replacement-'$(date --rfc-3339=ns)'"}}' \
+  --type=merge
+
+# Wait for etcd pods to finish redeployment
+oc get pods -n openshift-etcd -w
+# Wait for all etcd pods to become Running
+
+# 7c. Update HAProxy: remove old VM node IP from backend
+# Remove old node from HAProxy config
+# Then reload HAProxy
+# systemctl reload haproxy
+
+# 7d. Update DNS (if needed)
+```
+
+#### Step 8: Final Verification (Stability Acceptance Criteria)
+```bash
+# etcd healthy (3 members, all healthy)
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl member list -w table
+etcdctl endpoint health --cluster
+exit
+
+# All nodes Ready
+oc get nodes
+
+# All Cluster Operators normal (Available=True, Progressing=False, Degraded=False)
+oc get co | grep -v "True.*False.*False"
+
+# ODF healthy
+oc get pods -n openshift-storage
+
+# Monitoring system no alerts
+oc get alerts --all-namespaces | grep -i "firing"
+
+# Applications normal
+oc get routes --all-namespaces | wc -l
+```
+
+**⚠️ Stability acceptance: All conditions must be met before proceeding to next node:**
+- [ ] etcd cluster 3 members all healthy
+- [ ] All Cluster Operators Available=True, Progressing=False, Degraded=False
+- [ ] All nodes Ready
+- [ ] Monitoring system no new alerts (especially etcd-related)
+- [ ] Wait at least 24 hours to observe stability
+
+### ⚠️ Phase 3 Risk Reminders
+1. **Replace only one at a time** — Wait for etcd to be fully stable before next (recommend 24 hours)
+2. **3 control planes = fault tolerant 1** — If another fails during replacement, cluster will have issues
+3. **Schedule maintenance window** — etcd will have brief instability during force redeployment
+4. **CSR approval** — Use auto-approval script (keep running throughout Phase 3)
+5. **Time estimate** — Each node approximately 2-3 hours (excluding 24-hour stability observation)
+6. **HAProxy update** — Must update in steps promptly, otherwise API requests will route to removed old VM
+7. **DNS** — Update control plane node DNS records
+8. **etcd Quorum Guard** — Allows drain at 4 CP nodes, blocks at 3 (protection mechanism)
+9. **etcd Secrets** — Old node TLS secrets must be cleaned up to avoid Operator alerts
+
+### Phase 3 Command Quick Reference
+```bash
+# Verify cluster health
+oc get nodes && oc get co | grep -v "True.*False.*False"
+
+# Backup
+oc exec -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
+  /usr/local/bin/cluster-backup.sh /home/core/assets/backup
+
+# Add (automatic) — etcd Operator handles automatically, no manual commands needed
+
+# Remove (automatic) — Delete Machine object triggers
+oc delete machine <old-machine-name> -n openshift-machine-api
+
+# Clean etcd secrets
+oc get secrets -n openshift-etcd | grep <old-name> | awk '{print $1}' | \
+  xargs oc -n openshift-etcd delete secrets
+
+# Force redeployment
+oc patch etcd cluster -p='{"spec": {"forceRedeploymentReason": "recovery-'$(date --rfc-3339=ns)'"}}' --type=merge
+
+# Verify
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl member list -w table
+etcdctl endpoint health --cluster
+exit
+```
+
+## Phase 4: Move Workloads to Master Nodes
+
+> **Risk: LOW-MEDIUM | Time: 1-2 weeks | Method: update nodeSelector/affinity + rebalance**
+
+### Overview
+
+After Phase 3, you have 3 master BM + 6 worker BM. Master nodes have abundant resources (12 CPU, 64GB + NVMe each). This phase moves infra workloads from workers to masters to optimize resource utilization.
+
+**Target workload distribution on each master node:**
+
+```
+master01: etcd + control plane + ODF/Ceph OSD (NVMe) + Monitoring stack + Loki/Tempo/Jaeger
+master02: etcd + control plane + ODF/Ceph OSD (NVMe) + GitOps + Pipelines + Quay
+master03: etcd + control plane + ODF/Ceph OSD (NVMe) + Service Mesh + ECK + ACM +
+          Multicluster Engine + NeuVector/Aqua/RHACS + Cert Manager + Confluent +
+          CloudNativePG + DevWorkspace + Web Terminal + Kasten K10 + OpenTelemetry + KEDA
+```
+
+### Phase 4 Prerequisites
+- [ ] Phase 3 completed (3 master BM + 6 worker BM)
+- [ ] Each master has dedicated NVMe disk for ODF/Ceph OSD
+- [ ] etcd cluster healthy (3 members)
+- [ ] All Cluster Operators normal
+
+### Step-by-Step Procedure
+
+#### Step 1: Verify master node resources
+```bash
+# Verify each master has sufficient resources
+oc describe node master01-bm | grep -A 5 "Allocated resources"
+oc describe node master02-bm | grep -A 5 "Allocated resources"
+oc describe node master03-bm | grep -A 5 "Allocated resources"
+```
+
+#### Step 2: Move ODF to master nodes (NVMe)
+```bash
+# ODF should already be on masters if Phase 2a placed OSDs there
+# Verify Ceph OSD pods running on master nodes
+oc get pods -n openshift-storage -o wide | grep osd
+```
+
+#### Step 3: Move Monitoring to master01
+```bash
+# Update OpenShift Monitoring stack nodeSelector to master01
+# Edit Cluster Monitoring Config:
+oc edit configmap monitoring-config -n openshift-monitoring
+
+# Update Prometheus nodeSelector
+# Update Alertmanager nodeSelector
+# Update Thanos nodeSelector
+
+# Wait for pods to reschedule
+oc get pods -n openshift-monitoring -w
+```
+
+#### Step 4: Move GitOps + Pipelines + Quay to master02
+```bash
+# Update ArgoCD nodeSelector to master02
+# Update OpenShift Pipelines nodeSelector to master02
+# Update Quay nodeSelector to master02
+
+# Wait for pods to reschedule
+oc get pods -n openshift-gitops -w
+oc get pods -n openshift-pipelines -w
+oc get pods -n quay-enterprise -w
+```
+
+#### Step 5: Move remaining operators to master03
+```bash
+# Update Service Mesh nodeSelector to master03
+# Update Elasticsearch ECK nodeSelector to master03
+# Update ACM nodeSelector to master03
+# Update Multicluster Engine nodeSelector to master03
+# Update NeuVector/Aqua/RHACS nodeSelector to master03
+# Update Cert Manager nodeSelector to master03
+# Update Confluent nodeSelector to master03
+# Update CloudNativePG nodeSelector to master03
+# Update DevWorkspace nodeSelector to master03
+# Update Web Terminal nodeSelector to master03
+# Update Kasten K10 nodeSelector to master03
+# Update OpenTelemetry nodeSelector to master03
+# Update KEDA nodeSelector to master03
+
+# Wait for pods to reschedule
+```
+
+#### Step 6: Verify all workloads
+```bash
+# Verify all pods running on correct master nodes
+oc get pods --all-namespaces -o wide | grep master
+
+# Verify no pods left on old infra nodes (if they were removed)
+# Verify all applications healthy
+oc get pods --all-namespaces | grep -v Running | grep -v Completed
+```
+
+#### Step 7: Rebalance worker nodes
+```bash
+# After moving infra workloads to masters, workers should have more capacity
+# Verify worker resource utilization
+oc describe node worker01-bm | grep -A 5 "Allocated resources"
+
+# Rebalance application pods if needed
+oc get pods --all-namespaces -o wide | grep worker
+```
+
+### Phase 4 Acceptance Criteria
+- [ ] All infra workloads running on master nodes
+- [ ] Each master running its assigned components
+- [ ] All Cluster Operators normal
+- [ ] All applications healthy
+- [ ] Worker nodes have sufficient capacity for apps
+- [ ] etcd cluster healthy
+- [ ] ODF/Ceph healthy with NVMe-backed OSDs
+- [ ] Monitoring stack healthy on master01
+- [ ] GitOps/Pipelines/Quay healthy on master02
+- [ ] All other operators healthy on master03
+
+### Phase 4 ⚠️ Important Notes
+1. **NVMe for ODF** — Each master must have dedicated NVMe for Ceph OSD, separate from etcd
+2. **Resource planning** — Verify each master has enough resources before moving workloads
+3. **One operator at a time** — Move operators one at a time, verify stability before next
+4. **Rebalancing** — Ceph rebalance may take time after OSD migration
+5. **Monitoring** — Watch for resource pressure on master nodes after workload migration
 
 ---
+
 
