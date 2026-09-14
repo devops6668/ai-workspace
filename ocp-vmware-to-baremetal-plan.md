@@ -52,6 +52,11 @@
   - [Phase 3 Acceptance Criteria](#phase-3-acceptance-criteria)
 - [Phase 4: Add 3 More Workers (Optional)](#phase-4-add-3-more-workers-optional)
 - [Bare Metal Network Configuration (NIC Bonding)](#bare-metal-network-configuration-nic-bonding)
+### Part 3: Rollback Procedures
+- [Rollback: Phase 1 - Workers VM to BM](#rollback-phase-1---workers-vm-to-bm)
+- [Rollback: Phase 2 - Masters VM to BM (etcd Replacement)](#rollback-phase-2---masters-vm-to-bm-etcd-replacement)
+- [Rollback: Phase 3 - Infra to Master BM (Move Infra Components)](#rollback-phase-3---infra-to-master-bm-move-infra-components)
+- [Rollback Summary](#rollback-summary)
 - [References](#references)
 
 ---
@@ -2462,6 +2467,353 @@ oc delete machineconfig 10-br-ex-worker01
 3. **auto-route-metric: 48** -- Ensures br-ex default route has highest priority
 4. **Every BM node must be configured** -- Do not configure only one, all 3 workers need it
 5. **Test failover** -- After installation, unplug one network cable to test bonding failover
+
+---
+
+# Part 3: Rollback Procedures
+
+---
+
+## Rollback: Phase 1 - Workers VM to BM
+
+> **Risk: LOW | Rollback window: Before deleting old VMs**
+
+Phase 1 is the easiest to rollback because the old VMs are simply powered off, not deleted until Step 4.
+
+### Rollback Steps
+
+#### Step R1: Verify old VMs are still available
+
+```bash
+# Check if old VMs are still in vCenter (not yet deleted)
+# If VMs were only shut down (not deleted from disk), they can be powered back on
+```
+
+#### Step R2: Power on old VM workers
+
+```bash
+# From vCenter: Power On worker01, worker02, worker03 VMs
+# Or via SSH if VMs are accessible:
+ssh root@worker01
+# VM should boot and rejoin cluster
+```
+
+#### Step R3: Verify old VMs rejoin cluster
+
+```bash
+oc get nodes -w
+# Wait for worker01, worker02, worker03 to show Ready status
+```
+
+#### Step R4: Cordon + Drain BM workers
+
+```bash
+# Move workloads back to VM workers
+oc cordon worker01-bm
+oc drain worker01-bm --ignore-daemonsets --delete-emptydir-data
+
+oc cordon worker02-bm
+oc drain worker02-bm --ignore-daemonsets --delete-emptydir-data
+
+oc cordon worker03-bm
+oc drain worker03-bm --ignore-daemonsets --delete-emptydir-data
+```
+
+#### Step R5: Verify workloads migrated back
+
+```bash
+oc get pods --all-namespaces -o wide | grep worker01
+# Expected: pods running on old VM worker01
+```
+
+#### Step R6: Delete BM workers (optional)
+
+```bash
+# If you want to fully revert to VMware-only:
+oc delete node worker01-bm
+oc delete node worker02-bm
+oc delete node worker03-bm
+
+# Delete BM machines from vCenter (if applicable)
+```
+
+#### Rollback Verification
+
+```bash
+# All nodes Ready
+oc get nodes
+
+# All pods healthy
+oc get pods --all-namespaces | grep -v Running | grep -v Completed
+
+# ODF healthy
+oc get pods -n openshift-storage | grep -v Running
+
+# Monitoring healthy
+oc get pods -n openshift-monitoring | grep -v Running
+
+# All routes normal
+oc get routes --all-namespaces | wc -l
+```
+
+### Rollback Prerequisites
+
+- [ ] Old VM workers still exist in vCenter (not deleted from disk)
+- [ ] Old VM workers can be powered on
+- [ ] BM workers have been drained before powering on old VMs
+
+---
+
+## Rollback: Phase 2 - Masters VM to BM (etcd Replacement)
+
+> **Risk: HIGH | Rollback window: Before deleting old master VMs**
+> **Reference:** OCP 4.20 Backup and Restore - Restoring to an earlier cluster state
+
+Phase 2 rollback is more complex because it involves etcd. If the old master VMs are still available, rollback is possible but risky.
+
+### Rollback Steps
+
+#### Step R1: Verify old master VMs are still available
+
+```bash
+# Check if old master VMs are still in vCenter
+# If VMs were only shut down (not deleted from disk), they can be powered back on
+```
+
+#### Step R2: Take etcd snapshot (from current BM masters)
+
+```bash
+# Backup current etcd state BEFORE rollback
+oc exec -n openshift-etcd \
+  $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1) -- \
+  etcdctl snapshot save /tmp/etcd-rollback-$(date +%Y%m%d).db
+```
+
+#### Step R3: Power on old master VMs
+
+```bash
+# From vCenter: Power On master01, master02, master03 VMs
+```
+
+#### Step R4: Restore etcd from snapshot
+
+```bash
+# This is the most critical step
+# Follow OCP 4.20 official restore procedure:
+# https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/backup_and_restore/control-plane-backup-and-restore
+
+# Stop etcd on all BM masters
+# Restore etcd from snapshot
+# Restart etcd
+
+# WARNING: This can cause cluster downtime
+```
+
+#### Step R5: Update HAProxy
+
+```bash
+# Update HAProxy backend to point back to old VM master IPs
+# Reload HAProxy
+```
+
+#### Step R6: Verify cluster health
+
+```bash
+# etcd healthy
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl endpoint health --cluster
+exit
+
+# All nodes Ready
+oc get nodes
+
+# All Cluster Operators normal
+oc get co | grep -v "True.*False.*False"
+```
+
+#### Rollback Verification
+
+```bash
+# etcd cluster stable
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl member list -w table
+etcdctl endpoint health --cluster
+exit
+
+# All pods healthy
+oc get pods --all-namespaces | grep -v Running | grep -v Completed
+
+# All routes normal
+oc get routes --all-namespaces | wc -l
+```
+
+### Rollback Prerequisites
+
+- [ ] Old master VMs still exist in vCenter (not deleted from disk)
+- [ ] Old master VMs can be powered on
+- [ ] etcd snapshot taken before rollback
+- [ ] HAProxy configuration backed up
+- [ ] Maintenance window scheduled (cluster may have downtime during restore)
+
+### Rollback Risks
+
+1. **etcd restore may cause downtime** -- Cluster may be unavailable during etcd restore
+2. **Certificate issues** -- Old VMs may have stale certificates
+3. **Node name conflicts** -- Old VM node names may conflict with new BM node names
+4. **Data loss risk** -- If etcd restore fails, cluster may need full rebuild
+
+---
+
+## Rollback: Phase 3 - Infra to Master BM (Move Infra Components)
+
+> **Risk: MEDIUM | Rollback window: Before deleting infra VMs**
+
+Phase 3 rollback is possible if the old infra VMs are still available. The key is to move components back to the old VMs before deleting them.
+
+### Rollback Steps
+
+#### Step R1: Verify old infra VMs are still available
+
+```bash
+# Check if old infra01-06 VMs are still in vCenter
+```
+
+#### Step R2: Power on old infra VMs
+
+```bash
+# From vCenter: Power On infra01-06 VMs
+```
+
+#### Step R3: Move components back to old VMs
+
+```bash
+# Reverse the nodeSelector changes from Phase 3
+
+# Move Router back to old infra VMs
+oc patch ingresscontrollers.operator.openshift.io default -n openshift-ingress-operator \
+  --type=merge -p '{"spec":{"nodePlacement": {"nodeSelector": {"matchLabels": {"node-role.kubernetes.io/worker": ""}},"tolerations": []}}}'
+
+# Scale back to 2 replicas
+oc patch ingresscontroller/default -n openshift-ingress-operator --type=merge -p '{"spec":{"replicas": 2}}'
+
+# Move Registry back
+oc patch configs.imageregistry.operator.openshift.io/cluster --type=merge \
+  -p '{"spec":{"nodeSelector": {"node-role.kubernetes.io/worker": ""},"tolerations": []}}'
+
+# Move Monitoring back
+oc delete configmap cluster-monitoring-config -n openshift-monitoring
+# Monitoring will revert to default placement on worker nodes
+```
+
+#### Step R4: Move ODF back to old infra VMs
+
+```bash
+# This is the most complex rollback step
+# Reverse the ODF node replacement process
+
+# For each master node (master01-03):
+# 1. Scale down OSD on master
+# 2. Update LocalVolumeDiscovery/Set (add old infra node, remove master)
+# 3. Wait for Ceph rebalance
+# 4. Re-add ODF label to old infra node
+
+# WARNING: This may cause temporary Ceph unavailability
+```
+
+#### Step R5: Move remaining components back
+
+```bash
+# Reverse nodeSelector changes for:
+# - GitOps, Pipelines, Quay
+# - Service Mesh, ACM, Multicluster Engine
+# - NeuVector/Aqua/RHACS, Cert Manager
+# - Confluent, CloudNativePG
+# - DevWorkspace, Web Terminal
+# - Kasten K10, OpenTelemetry, KEDA
+```
+
+#### Step R6: Cordon + Drain BM master nodes
+
+```bash
+# After all components are moved back to old VMs
+oc cordon master01-bm
+oc drain master01-bm --ignore-daemonsets --delete-emptydir-data
+
+oc cordon master02-bm
+oc drain master02-bm --ignore-daemonsets --delete-emptydir-data
+
+oc cordon master03-bm
+oc drain master03-bm --ignore-daemonsets --delete-emptydir-data
+```
+
+#### Step R7: Verify
+
+```bash
+# All components running on old infra VMs
+oc get pods --all-namespaces -o wide | grep infra
+
+# No pods on BM masters (except etcd/control plane)
+oc get pods --all-namespaces -o wide | grep master
+
+# Cluster health
+oc get nodes
+oc get co | grep -v "True.*False.*False"
+```
+
+#### Rollback Verification
+
+```bash
+# etcd healthy
+oc rsh -n openshift-etcd $(oc get pods -n openshift-etcd -l app=etcd -o name | head -1)
+etcdctl endpoint health --cluster
+exit
+
+# ODF healthy
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-mon -o name | head -1)
+ceph health
+exit
+
+# Monitoring healthy
+oc get pods -n openshift-monitoring | grep -v Running
+
+# All routes normal
+oc get routes --all-namespaces | wc -l
+
+# ArgoCD sync normal
+oc get applications -n openshift-gitops
+```
+
+### Rollback Prerequisites
+
+- [ ] Old infra01-06 VMs still exist in vCenter (not deleted from disk)
+- [ ] Old infra VMs can be powered on
+- [ ] ODF rollback completed first (most complex step)
+- [ ] All component nodeSelector changes backed up before Phase 3
+
+### Rollback Risks
+
+1. **ODF rollback is complex** -- Moving OSD back from masters to old infra VMs requires careful Ceph management
+2. **Ceph rebalance** -- Rollback may cause temporary Ceph performance degradation
+3. **Component downtime** -- Some components may have brief downtime during nodeSelector changes
+4. **Monitoring gap** -- Monitoring may have a brief gap during ConfigMap recreation
+
+---
+
+## Rollback Summary
+
+| Phase | Risk | Key Constraint | Rollback Complexity |
+|-------|------|----------------|-------------------|
+| Phase 1: Workers VM to BM | LOW | Old VMs must exist | SIMPLE - power on VMs, drain BM |
+| Phase 2: Masters VM to BM | HIGH | Old VMs + etcd restore | COMPLEX - etcd restore may cause downtime |
+| Phase 3: Infra to Master BM | MEDIUM | Old infra VMs must exist | MODERATE - ODF rollback is complex |
+
+### General Rollback Rules
+
+1. **Always backup before rollback** -- Take etcd snapshot, backup HAProxy config, backup monitoring rules
+2. **One phase at a time** -- Do not attempt to rollback multiple phases simultaneously
+3. **Test in lab first** -- If possible, test rollback procedure in a lab environment
+4. **Schedule maintenance window** -- Phase 2 rollback may cause cluster downtime
+5. **Verify after each step** -- Check cluster health after every rollback step
 
 ---
 
