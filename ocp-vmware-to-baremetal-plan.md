@@ -1201,77 +1201,254 @@ oc debug node/<worker01-bm> -- chroot /host cat /proc/net/bonding/bond0
 
 ### Step 1: Add First BM Worker (worker01)
 
-#### Step 1a: Boot BM node with RHCOS
+#### Option A: Without BMC/IPMI (Manual Installation)
+
+Use this option if your bare metal servers do not have BMC/IPMI (no remote management).
+
+**Step 1a: Prepare RHCOS USB**
 
 ```bash
-# Boot from RHCOS ISO
-# At boot prompt, provide Ignition URL:
-sudo coreos-installer install /dev/sda \\
-    --ignition-url=http://<http_server>/worker.ign \\
-    --insecure-ignition \\
+# On your workstation, create bootable USB
+# Download RHCOS ISO matching your OCP version
+wget https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.20/<version>/rhcos-<version>-live.x86_64.iso
+
+# Write ISO to USB (Linux)
+sudo dd if=rhcos-<version>-live.x86_64.iso of=/dev/sd bs=4M status=progress
+
+# Or use Rufus on Windows
+```
+
+**Step 1b: Boot BM node from USB**
+
+```bash
+# Insert USB into BM server
+# Boot from USB (may need to press F12/F2/Del to select boot device)
+# Select USB device as boot source
+```
+
+**Step 1c: Install RHCOS to disk**
+
+```bash
+# At the RHCOS Live boot prompt, run:
+sudo coreos-installer install /dev/sda \
+    --ignition-url=http://<http_server>/worker.ign \
+    --insecure-ignition \
     --platform=metal
+
+# Replace <http_server> with your HTTP server hosting worker.ign
+# /dev/sda is the target disk (check with lsblk)
 ```
 
-If BMH is configured with Redfish Virtual Media, RHCOS installation is handled automatically by Bare Metal Operator -- skip manual coreos-installer.
-
-#### Step 1b: Verify bonding status
+**Step 1d: Reboot**
 
 ```bash
-# On the new BM node (via console or SSH after boot):
-cat /proc/net/bonding/bond0
-# Verify both NICs are slave interfaces
-# Verify bond0 is active
-# Expected output:
-# Bonding Mode: fault-tolerance (active-backup)
-# Slave Interface: eno1
-# Slave Interface: eno2
-# Active Slave: eno1
+# Remove USB
+# Reboot the server
+sudo reboot
 ```
 
-#### Step 1c: Verify OVS bridge
-
-```bash
-# On the new BM node:
-ovs-vsctl show
-# Verify br-ex bridge exists and bond0 is a port
-# Expected: br-ex bridge with bond0 as port, with IP address assigned
-```
-
-#### Step 1d: Approve CSR
+**Step 1e: Verify node joins cluster**
 
 ```bash
 # On a machine with oc access:
-oc get csr | grep Pending
-
-# Approve all pending CSRs for the new node
-oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\\n"}}{{end}}{{end}}' | \\
-  xargs oc adm certificate approve
-
-# Verify CSR approved
-oc get csr | grep Approved
-```
-
-#### Step 1e: Verify node Ready
-
-```bash
 oc get nodes -w
 # Wait for worker01-bm to show Ready status
-# Expected:
-# NAME           STATUS   ROLES    AGE   VERSION
-# worker01-bm    Ready    worker   5m    v1.30.x
 ```
 
-#### Step 1f: Verify bonding failover (optional but recommended)
+---
+
+#### Option B: With BMC/IPMI (Automated Installation via BareMetalHost)
+
+Use this option if your bare metal servers have BMC/IPMI (Dell iDRAC, HP iLO, Cisco UCS IMC, etc.).
+
+**Step 1a: Verify BMC connectivity**
+
+```bash
+# Test Redfish API (Dell iDRAC example)
+curl -k -u <bmc_user>:<bmc_pass> \
+  https://<bmc_ip>/redfish/v1/Systems/System.Embedded.1
+
+# For Cisco UCS
+curl -k -u <bmc_user>:<bmc_pass> \
+  https://<bmc_ip>/redfish/v1/Systems/1
+
+# Expected: JSON response with system info
+```
+
+**Step 1b: Create BMC Secret**
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: worker01-bmc-secret
+  namespace: openshift-machine-api
+type: Opaque
+data:
+  username: <base64_encoded_bmc_user>
+  password: <base64_encoded_bmc_pass>
+```
+
+```bash
+# Create the secret
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: worker01-bmc-secret
+  namespace: openshift-machine-api
+type: Opaque
+data:
+  username: $(echo -n '<bmc_user>' | base64)
+  password: $(echo -n '<bmc_pass>' | base64)
+EOF
+```
+
+**Step 1c: Create BareMetalHost**
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: worker01-bm
+  namespace: openshift-machine-api
+spec:
+  automatedCleaningMode: disabled
+  bmc:
+    address: redfish://<bmc_ip>/redfish/v1/Systems/System.Embedded.1
+    credentialsName: worker01-bmc-secret
+    disableCertificateVerification: true
+  bootMACAddress: "<NIC1_MAC_ADDRESS>"
+  bootMode: UEFI
+  externallyProvisioned: false
+  online: true
+```
+
+```bash
+# Create the BareMetalHost
+cat <<EOF | oc apply -f -
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: worker01-bm
+  namespace: openshift-machine-api
+spec:
+  automatedCleaningMode: disabled
+  bmc:
+    address: redfish://<bmc_ip>/redfish/v1/Systems/System.Embedded.1
+    credentialsName: worker01-bmc-secret
+    disableCertificateVerification: true
+  bootMACAddress: "<NIC1_MAC_ADDRESS>"
+  bootMode: UEFI
+  externallyProvisioned: false
+  online: true
+EOF
+
+# Wait for BMH to register and become available
+oc get bmh -n openshift-machine-api -w
+# Wait for STATE to become "available" or "provisioning"
+```
+
+**Step 1d: Create Machine object**
+
+```bash
+# Copy providerSpec from an existing worker Machine
+oc get machine -n openshift-machine-api <existing-worker-machine> -o yaml > worker01-machine.yaml
+
+# Edit the YAML:
+# - Change name to worker01-bm
+# - Update metal3.io/BareMetalHost annotation
+# - Update labels (cluster-api-cluster, etc.)
+# - Update userData name if needed
+
+cat <<EOF | oc apply -f -
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  annotations:
+    metal3.io/BareMetalHost: openshift-machine-api/worker01-bm
+  labels:
+    machine.openshift.io/cluster-api-cluster: <cluster-name>
+    machine.openshift.io/cluster-api-machine-role: worker
+    machine.openshift.io/cluster-api-machine-type: worker
+  name: <cluster-name>-worker01-bm
+  namespace: openshift-machine-api
+spec:
+  metadata: {}
+  providerSpec:
+    value:
+      apiVersion: baremetal.cluster.k8s.io/v1alpha1
+      customDeploy:
+        method: install_coreos
+      hostSelector: {}
+      image:
+        checksum: ""
+        url: ""
+      kind: BareMetalMachineProviderSpec
+      metadata:
+        creationTimestamp: null
+      userData:
+        name: worker-user-data-managed
+EOF
+```
+
+**Step 1e: Wait for node to join cluster**
+
+```bash
+# Bare Metal Operator will automatically:
+# 1. Power on the server via BMC
+# 2. Mount RHCOS ISO via virtual media
+# 3. Install RHCOS
+# 4. Server reboots and joins cluster
+
+# Monitor progress
+oc get bmh -n openshift-machine-api -w
+# Wait for STATE to become "provisioned"
+
+# Approve CSRs
+oc get csr | grep Pending
+oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | \
+  xargs oc adm certificate approve
+
+# Wait for node Ready
+oc get nodes -w
+# Wait for worker01-bm to show Ready status
+```
+
+**Step 1f: Verify bonding status**
+
+```bash
+# Verify NMState bonding configuration applied
+oc debug node/worker01-bm -- chroot /host cat /proc/net/bonding/bond0
+# Expected: Bonding Mode: IEEE 802.3ad (LACP)
+
+# Verify OVS bridge
+oc debug node/worker01-bm -- chroot /host ovs-vsctl show
+# Expected: br-ex bridge with bond0 as port
+```
+
+**Step 1g: Verify bonding failover (optional but recommended)**
 
 ```bash
 # Unplug one network cable from the BM node
 # Verify bond0 stays active with remaining NIC
-cat /proc/net/bonding/bond0
-# Verify "Active Slave" changed to the remaining NIC
+oc debug node/worker01-bm -- chroot /host cat /proc/net/bonding/bond0
+# "Active Slave" should change to the remaining NIC
 
 # Replug the cable
 # Verify both NICs are back as slaves
 ```
+
+---
+
+#### Summary: Which Option to Choose
+
+| Scenario | Option | Steps |
+|----------|--------|-------|
+| No BMC/IPMI on BM servers | Option A | Manual USB install (15-20 min per node) |
+| BMC/IPMI available (iDRAC/iLO/UCS) | Option B | BareMetalHost automated install |
+| Cisco UCS with Redfish | Option B | Use redfish:// protocol |
+| Many BM servers (>10) | Option B | Automation saves significant time |
 
 ### Step 2: Migrate Workloads from VM to BM
 
