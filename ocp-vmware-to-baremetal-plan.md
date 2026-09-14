@@ -1691,11 +1691,48 @@ oc get bmh -n openshift-machine-api master-bm-<N> -w
 
 #### Step 3: Install RHCOS to BM machine
 
+##### Option A: Without BMC/IPMI (Manual Installation)
+
+Use this option if your bare metal servers do not have BMC/IPMI.
+
 ```bash
-# If BMH is configured with Redfish Virtual Media (BMC/IPMI available),
-# RHCOS installation is handled automatically by Bare Metal Operator -- skip manual coreos-installer.
-# Step 3 is only for scenarios without BMC support, requiring manual USB/ISO insertion.
+# 1. Prepare RHCOS USB on your workstation
+wget https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.20/<version>/rhcos-<version>-live.x86_64.iso
+sudo dd if=rhcos-<version>-live.x86_64.iso of=/dev/sd bs=4M status=progress
+
+# 2. Insert USB into BM server, boot from USB
+
+# 3. At RHCOS Live boot prompt, install to disk:
+sudo coreos-installer install /dev/sda \\
+    --ignition-url=http://<http_server>/master.ign \\
+    --insecure-ignition \\
+    --platform=metal
+
+# 4. Remove USB and reboot
+sudo reboot
 ```
+
+##### Option B: With BMC/IPMI (Automated via BareMetalHost)
+
+Use this option if your bare metal servers have BMC/IPMI (Dell iDRAC, HP iLO, Cisco UCS IMC, etc.).
+
+**Verify BMC connectivity:**
+
+```bash
+# Dell iDRAC
+curl -k -u <bmc_user>:<bmc_pass> \\
+  https://<bmc_ip>/redfish/v1/Systems/System.Embedded.1
+
+# Cisco UCS
+curl -k -u <bmc_user>:<bmc_pass> \\
+  https://<bmc_ip>/redfish/v1/Systems/1
+
+# HP iLO
+curl -k -u <bmc_user>:<bmc_pass> \\
+  https://<bmc_ip>/redfish/v1/Systems/1
+```
+
+If BMC is reachable, Bare Metal Operator will automatically handle RHCOS installation via Redfish Virtual Media. **Skip manual coreos-installer** -- the BMH object created in Step 2 will power on the server, mount RHCOS ISO via virtual media, and install automatically.
 
 #### Step 4: Create Machine object and join cluster
 
