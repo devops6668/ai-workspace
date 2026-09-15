@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'dark', flowchart:{useMaxWidth:true, htmlLabels:true, curve:'basis'}})</script>
+<style>
+body { margin: 0; padding: 24px; background: #0d1117; font-family: 'Segoe UI', monospace; color: #e2e8f0; }
+h1 { text-align: center; color: #fbbf24; margin-bottom: 4px; }
+h2 { text-align: center; color: #94a3b8; font-size: 14px; font-weight: normal; margin-top: 0; }
+.mermaid { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<h1>SeaweedFS — Paimon Datalake Integration</h1>
+<h2>Streaming Lakehouse Architecture with Apache Flink + Paimon</h2>
+<div class="mermaid">
+graph TB
+    subgraph Sources["Data Sources"]
+        direction LR
+        KAFKA["Apache Kafka<br/>CDC / Events"]
+        DB["MySQL / PostgreSQL<br/>CDC via Flink CDC"]
+        LOGS["Application Logs"]
+        API["REST APIs"]
+    end
+
+    subgraph Processing["Stream Processing"]
+        direction LR
+        FLINK["Apache Flink<br/>Stream Processing"]
+        FLINKCDC["Flink CDC<br/>Change Data Capture"]
+    end
+
+    subgraph Paimon["Apache Paimon — Streaming Lakehouse Format"]
+        direction LR
+        PMPK["PrimaryKey Tables<br/>LSM-Tree + Compaction"]
+        PMAPPEND["Append Tables<br/>Streaming Append"]
+        PMCDC["Changelog Producer<br/>Row-level Changes"]
+    end
+
+    subgraph Seaweed["SeaweedFS — Unified Storage + Catalog"]
+        direction TB
+        subgraph SGW["S3 Gateway Layer"]
+            S3EP["S3 Endpoint<br/>:8333"]
+            ICECAT["Iceberg REST Catalog<br/>Built-in"]
+        end
+        subgraph SFILER["Filer Layer"]
+            SF1["Filer"]
+            SF2["Filer"]
+        end
+        subgraph SMETA["Metadata Store"]
+            DBMETA["PostgreSQL / MySQL"]
+        end
+        subgraph SMASTER["Master HA (3 nodes)"]
+            SM1["M1"]
+            SM2["M2"]
+            SM3["M3"]
+        end
+        subgraph SVOL["Volume Servers"]
+            VOL1["Vol 1 SSD<br/>Hot Data"]
+            VOL2["Vol 2 SSD<br/>Hot Data"]
+            VOL3["Vol 3 HDD<br/>Warm Data"]
+            VOLN["Vol N HDD<br/>Erasure Coded"]
+        end
+        subgraph STIER["Tiering"]
+            HOTLINE["Replication<br/>Fast Writes"]
+            EC["Erasure Coding<br/>1.2x Overhead"]
+            CTIER["Cloud Tier<br/>S3/GCS/Azure"]
+        end
+    end
+
+    subgraph Query["Query Engines"]
+        direction LR
+        SPARK["Apache Spark<br/>Batch Analytics"]
+        TRINOS["Trino / StarRocks<br/>OLAP Queries"]
+        DUCK["DuckDB<br/>Local Analytics"]
+        DORIS["Apache Doris<br/>Real-time OLAP"]
+    end
+
+    subgraph Output["Applications"]
+        direction LR
+        DASH["Dashboards"]
+        ML["ML / AI Pipelines"]
+        REPORT["Reports"]
+    end
+
+    KAFKA --> FLINK
+    DB --> FLINKCDC
+    LOGS --> FLINK
+    API --> FLINK
+
+    FLINK --> PMPK
+    FLINK --> PMAPPEND
+    FLINKCDC --> PMCDC
+
+    PMPK -->|"s3://warehouse/*<br/>Parquet/ORC files"| S3EP
+    PMAPPEND -->|"s3://warehouse/*"| S3EP
+    PMCDC -->|"s3://warehouse/*"| S3EP
+
+    S3EP --> SF1
+    S3EP --> SF2
+    SF1 --> SM1
+    SF2 --> SM2
+    SF1 --> DBMETA
+    SM1 <-.-> SM2
+    SM2 <-.-> SM3
+    SM1 --> VOL1
+    SM2 --> VOL2
+    SM3 --> VOL3
+    SM1 --> VOLN
+    VOL1 --> HOTLINE
+    VOL3 --> EC
+    EC --> CTIER
+
+    S3EP <-->|"Iceberg REST API"| SPARK
+    S3EP <-->|"Iceberg REST API"| TRINOS
+    S3EP <-->|"Iceberg REST API"| DUCK
+    S3EP <-->|"Iceberg REST API"| DORIS
+    ICECAT <-->|"Table Metadata"| SPARK
+    ICECAT <-->|"Table Metadata"| TRINOS
+
+    SPARK --> DASH
+    TRINOS --> REPORT
+    DORIS --> ML
+    DUCK --> ML
+
+    style Sources fill:#0c1222,stroke:#475569,stroke-width:1px,color:#e2e8f0
+    style Processing fill:#0a2040,stroke:#3b82f6,stroke-width:1px,color:#dbeafe
+    style Paimon fill:#1a1500,stroke:#eab308,stroke-width:1px,color:#fef9c3
+    style Seaweed fill:#072e1f,stroke:#22c55e,stroke-width:2px,color:#dcfce7
+    style SGW fill:#0a2e3d,stroke:#22d3ee,stroke-width:1px,color:#cffafe
+    style SFILER fill:#072e1f,stroke:#34d399,stroke-width:1px,color:#d1fae5
+    style SMETA fill:#1e1040,stroke:#a78bfa,stroke-width:1px,color:#ede9fe
+    style SMASTER fill:#1a0a0a,stroke:#f87171,stroke-width:1px,color:#fecdd3
+    style SVOL fill:#1a1a0a,stroke:#fbbf24,stroke-width:1px,color:#fef3c7
+    style STIER fill:#1a0f05,stroke:#fb923c,stroke-width:1px,color:#ffedd5
+    style Query fill:#0f172a,stroke:#818cf8,stroke-width:1px,color:#e0e7ff
+    style Output fill:#0c1222,stroke:#475569,stroke-width:1px,color:#e2e8f0
+</div>
+</body>
+</html>

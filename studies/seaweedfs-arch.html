@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'dark', flowchart:{useMaxWidth:true, htmlLabels:true, curve:'basis'}})</script>
+<style>
+body { margin: 0; padding: 24px; background: #0d1117; font-family: 'Segoe UI', monospace; color: #e2e8f0; }
+h1 { text-align: center; color: #22d3ee; margin-bottom: 8px; }
+h2 { text-align: center; color: #94a3b8; font-size: 14px; font-weight: normal; margin-top: 0; }
+.mermaid { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<h1>SeaweedFS Architecture</h1>
+<h2>Distributed Storage System — Object (S3) + File + Iceberg Lakehouse</h2>
+<div class="mermaid">
+graph TB
+    subgraph Clients["Client Layer"]
+        direction LR
+        S3CLI["S3 CLI / SDK"]
+        FUSE["FUSE Mount"]
+        WEBDAV["WebDAV"]
+        SFTP["SFTP"]
+        SPARK["Spark / Flink"]
+        TRINO["Trino / Doris"]
+        HADOOP["Hadoop / HBase"]
+    end
+
+    subgraph Gateway["Stateless Gateway Layer (Horizontal Scale)"]
+        direction LR
+        S3GW["S3 Gateway :8333<br/>IAM / STS / SSE"]
+        ICEREST["Iceberg REST Catalog<br/>S3 Tables"]
+        FUSEGW["FUSE / WebDAV / SFTP"]
+        HADOOPGW["HDFS Gateway"]
+    end
+
+    subgraph Filer["Filer Layer (Stateless, Scale Linearly)"]
+        direction LR
+        FILER1["Filer 1"]
+        FILER2["Filer 2"]
+        FILERN["Filer N"]
+    end
+
+    subgraph MetaStore["Filer Metadata Store"]
+        direction LR
+        PG["PostgreSQL"]
+        MYSQL["MySQL"]
+        REDIS["Redis"]
+        CASS["Cassandra"]
+        SQLITE["SQLite / LevelDB"]
+    end
+
+    subgraph Master["Master Layer — Raft Consensus (3 nodes HA)"]
+        direction LR
+        M1["Master 1<br/>Leader"]
+        M2["Master 2<br/>Follower"]
+        M3["Master 3<br/>Follower"]
+    end
+
+    subgraph Volume["Volume Servers (Add to Scale Out)"]
+        direction LR
+        V1["Volume 1<br/>SSD"]
+        V2["Volume 2<br/>SSD"]
+        V3["Volume 3<br/>HDD"]
+        VN["Volume N<br/>HDD"]
+    end
+
+    subgraph Tiering["Data Tiering (Background)"]
+        direction LR
+        HOT["Hot Data<br/>Replication<br/>Fast Writes"]
+        WARM["Warm Data<br/>Erasure Coding<br/>1.2x Overhead"]
+        CLOUDTIER["Cloud Tier<br/>S3 / GCS / Azure<br/>Unlimited Capacity"]
+    end
+
+    S3CLI --> S3GW
+    FUSE --> FUSEGW
+    WEBDAV --> FUSEGW
+    SFTP --> FUSEGW
+    SPARK --> HADOOPGW
+    HADOOP --> HADOOPGW
+    TRINO --> ICEREST
+    SPARK --> ICEREST
+
+    S3GW --> FILER1
+    ICEREST --> FILER2
+    FUSEGW --> FILERN
+    HADOOPGW --> FILER1
+
+    FILER1 --> PG
+    FILER2 --> REDIS
+    FILERN --> CASS
+
+    FILER1 --> M1
+    FILER2 --> M2
+    FILERN --> M3
+
+    M1 <-.->|"Raft"| M2
+    M2 <-.->|"Raft"| M3
+
+    M1 -->|"assign vol"| V1
+    M1 -->|"assign vol"| V2
+    M2 -->|"assign vol"| V3
+    M3 -->|"assign vol"| VN
+
+    V1 --> HOT
+    V2 --> HOT
+    V3 --> WARM
+    VN --> WARM
+    WARM --> CLOUDTIER
+
+    style Clients fill:#0c1222,stroke:#475569,stroke-width:1px,color:#e2e8f0
+    style Gateway fill:#0a2e3d,stroke:#22d3ee,stroke-width:1px,color:#cffafe
+    style Filer fill:#072e1f,stroke:#34d399,stroke-width:1px,color:#d1fae5
+    style MetaStore fill:#1e1040,stroke:#a78bfa,stroke-width:1px,color:#ede9fe
+    style Master fill:#1a0a0a,stroke:#f87171,stroke-width:1px,color:#fecdd3
+    style Volume fill:#1a1a0a,stroke:#fbbf24,stroke-width:1px,color:#fef3c7
+    style Tiering fill:#1a0f05,stroke:#fb923c,stroke-width:1px,color:#ffedd5
+</div>
+</body>
+</html>
