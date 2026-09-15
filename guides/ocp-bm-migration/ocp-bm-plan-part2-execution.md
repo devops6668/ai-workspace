@@ -275,8 +275,13 @@ Use this option if your bare metal servers do not have BMC/IPMI (no remote manag
 # Download RHCOS ISO matching your OCP version
 wget https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.20/<version>/rhcos-<version>-live.x86_64.iso
 
-# Write ISO to USB (Linux)
-sudo dd if=rhcos-<version>-live.x86_64.iso of=/dev/sd bs=4M status=progress
+# First, confirm USB device name
+lsblk
+# or
+ls /dev/sd*
+
+# Write ISO to USB (replace /dev/sdX with your actual USB device)
+sudo dd if=rhcos-<version>-live.x86_64.iso of=/dev/sdX bs=4M status=progress
 
 # Or use Rufus on Windows
 ```
@@ -729,7 +734,7 @@ Use this option if your bare metal servers do not have BMC/IPMI.
 ```bash
 # 1. Prepare RHCOS USB on your workstation
 wget https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.20/<version>/rhcos-<version>-live.x86_64.iso
-sudo dd if=rhcos-<version>-live.x86_64.iso of=/dev/sd bs=4M status=progress
+sudo dd if=rhcos-<version>-live.x86_64.iso of=/dev/sdX bs=4M status=progress
 
 # 2. Insert USB into BM server, boot from USB
 
@@ -837,8 +842,8 @@ oc adm drain <old-vm-master-name> --ignore-daemonsets --delete-emptydir-data --f
 # Delete Machine object (triggers etcd Operator automatic member removal)
 oc delete machine <old-vm-machine-name> -n openshift-machine-api
 
-# Delete BMH object
-oc delete bmh <old-vm-bmh-name> -n openshift-machine-api
+# Note: Old VMware VM masters do NOT have BareMetalHost objects (UPI cluster).
+# Skip BMH deletion for old VM nodes — BMH only exists for new BM nodes added via Bare Metal Operator.
 ```
 
 #### Step 7: Clean etcd Secrets + Force Redeployment + Verify
@@ -1152,6 +1157,9 @@ oc logs -l job-name=ocs-osd-removal-job -n openshift-storage \
 # Wait for Ceph HEALTH_OK after each OSD removal
 oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph status
 # CRITICAL: Do not proceed until HEALTH_OK
+
+# Delete ocs-osd-removal-job after completion (official requirement)
+oc delete -n openshift-storage job ocs-osd-removal-job
 ```
 
 **B1d. Update LocalVolumeDiscovery + LocalVolumeSet (remove infra01, keep master01)**
@@ -2354,9 +2362,7 @@ Expected: `0/1` ready.
 
 ```bash
 # List current OSDs and their device sizes
-oc exec -it $(oc get pod -n openshift-storage -l app=rook-ceph-operator -o name) \
-  -n openshift-storage -- ceph osd tree \
-  -c /var/lib/rook/openshift-storage/openshift-storage.config
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph osd tree
 ```
 
 Identify which OSD IDs are on 600GB disks (check device path/size in the tree output).
@@ -2364,8 +2370,8 @@ Identify which OSD IDs are on 600GB disks (check device path/size in the tree ou
 ### Step 9.2: Remove First Old OSD
 
 ```bash
-# Delete any pending jobs first
-oc delete jobs -n openshift-storage --all
+# Delete any pending OSD removal job
+oc delete job ocs-osd-removal-job -n openshift-storage 2>/dev/null || true
 
 # Set the OSD ID to remove (e.g., osd-0 on infra01 with 600GB)
 osd_id_to_remove=0
@@ -2392,17 +2398,13 @@ Wait for `1/1` completion.
 ```bash
 oc get deployment -n openshift-storage | grep osd
 
-oc exec -it $(oc get pod -n openshift-storage -l app=rook-ceph-operator -o name) \
-  -n openshift-storage -- ceph osd tree \
-  -c /var/lib/rook/openshift-storage/openshift-storage.config
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph osd tree
 ```
 
 ### Step 9.5: Wait for HEALTH_OK Before Next Removal
 
 ```bash
-oc exec -it $(oc get pod -n openshift-storage -l app=rook-ceph-operator -o name) \
-  -n openshift-storage -- ceph status \
-  -c /var/lib/rook/openshift-storage/openshift-storage.config
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph status
 ```
 
 **MUST see:**
@@ -2415,7 +2417,7 @@ osd:  5 osds: 5 up, 5 in
 ### Step 9.6: Repeat for Second Old OSD (infra02, 600GB)
 
 ```bash
-oc delete jobs -n openshift-storage --all
+oc delete job ocs-osd-removal-job -n openshift-storage 2>/dev/null || true
 
 osd_id_to_remove=1    # OSD on infra02
 
@@ -2431,7 +2433,7 @@ Wait for HEALTH_OK + all active+clean.
 ### Step 9.7: Repeat for Third Old OSD (infra03, 600GB)
 
 ```bash
-oc delete jobs -n openshift-storage --all
+oc delete job ocs-osd-removal-job -n openshift-storage 2>/dev/null || true
 
 osd_id_to_remove=2    # OSD on infra03
 
@@ -2447,9 +2449,7 @@ Wait for HEALTH_OK + all active+clean.
 ### Step 9.8: Final Verification After All Removals
 
 ```bash
-oc exec -it $(oc get pod -n openshift-storage -l app=rook-ceph-operator -o name) \
-  -n openshift-storage -- ceph status \
-  -c /var/lib/rook/openshift-storage/openshift-storage.config
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph status
 ```
 
 **Expected:**
@@ -2517,9 +2517,7 @@ oc get pods -n openshift-storage | grep osd-prepare
 
 ```bash
 # Quick capacity check
-oc exec -it $(oc get pod -n openshift-storage -l app=rook-ceph-operator -o name) \
-  -n openshift-storage -- ceph df \
-  -c /var/lib/rook/openshift-storage/openshift-storage.config
+oc rsh -n openshift-storage $(oc get pods -n openshift-storage -l app=rook-ceph-tools -o name) ceph df
 ```
 
 ---
