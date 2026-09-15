@@ -1,0 +1,80 @@
+Category,Component,Option 1 (Full Bare Metal),Option 2 (Nutanix),Option 3 (Hyper-V),Option 4 (Hybrid - RECOMMENDED)
+Overview,Effort,EXTREME,HIGH,EXTREME,LOW-MODERATE
+Overview,Time,6-10 weeks,4-8 weeks,6-10 weeks,1-2 weeks
+Overview,Risk,HIGH,HIGH,HIGH,LOW
+Overview,VMware Savings,100% (12→0),100% (12→0),100% (12→0),25% (12→9)
+Overview,Platform,platform: none,platform: nutanix,platform: none,platform: none
+Overview,Supported,YES (full RH SLA),YES (full RH SLA),YES (bare metal only),YES (full RH SLA)
+Control Plane,Migrate CP?,YES ⚠️ CRITICAL,YES ⚠️ CRITICAL,YES ⚠️ CRITICAL,NO ✓
+Control Plane,etcd migration?,YES ⚠️,YES ⚠️,YES ⚠️,NO ✓
+Control Plane,API reconfig?,YES ⚠️,YES ⚠️,YES ⚠️,NO ✓
+Control Plane,Cert regen?,MAYBE ⚠️,MAYBE ⚠️,MAYBE ⚠️,NO ✓
+Control Plane,Cluster risk?,UNRECOVERABLE if failed,UNRECOVERABLE if failed,UNRECOVERABLE if failed,ZERO
+Install Method,Installer,IPI/UPI or bare metal,IPI (Nutanix),Manual/Bare Metal (platform: none),IPI/UPI
+Install Method,Auto-provision?,YES (IPI),YES (IPI),NO (manual),YES (IPI)
+Install Method,Machine API?,YES,YES,NO,NO (workers only)
+Install Method,Autoscaling?,YES,YES,NO,NO
+Install Method,Cloud provider?,NO,YES (Nutanix),NO,NO
+Storage (ODF),ODF rebuild?,YES ⚠️ CRITICAL,YES ⚠️ CRITICAL,YES ⚠️ CRITICAL,NO ✓
+Storage (ODF),Ceph migration?,YES (weeks),YES (weeks),YES (weeks),NO ✓
+Storage (ODF),PVC backup/restore?,YES (all PVCs),YES (all PVCs),YES (all PVCs),NO ✓
+Storage (ODF),StorageClasses?,Recreate all 7,Recreate all 7,Recreate all 7,NO ✓
+Storage (ODF),TopoLVM?,Recreate,Recreate,Recreate,Re-provision only
+Storage (ODF),Data loss risk?,HIGH,HIGH,HIGH,ZERO
+Monitoring,Prometheus?,Reinstall,Reinstall,Reinstall,NO ✓
+Monitoring,Alertmanager?,Recreate rules,Recreate rules,Recreate rules,NO ✓
+Monitoring,Thanos?,Reinstall,Reinstall,Reinstall,NO ✓
+Monitoring,Loki?,Reinstall,Reinstall,Reinstall,NO ✓
+Monitoring,Tempo?,Reinstall,Reinstall,Reinstall,NO ✓
+Monitoring,Jaeger?,Reinstall,Reinstall,Reinstall,NO ✓
+Monitoring,ECK?,Reinstall,Reinstall,Reinstall,NO ✓
+Monitoring,Rules intact?,NO (recreate),NO (recreate),NO (recreate),YES ✓
+Operators (65),Reinstall all?,YES (65 ops),YES (65 ops),YES (65 ops),NO ✓
+Operators (65),CRDs intact?,NO (recreate),NO (recreate),NO (recreate),YES ✓
+Operators (65),Config intact?,NO (reconfigure),NO (reconfigure),NO (reconfigure),YES ✓
+Operators (65),Dependencies?,Re-solve,Re-solve,Re-solve,NO ✓
+GitOps,ArgoCD?,Reinstall,Reinstall,Reinstall,NO ✓
+GitOps,Re-point apps?,ALL 135 projects,ALL 135 projects,ALL 135 projects,NO ✓
+GitOps,Re-sync?,YES,YES,YES,NO ✓
+GitOps,Config intact?,NO,NO,NO,YES ✓
+Pipelines,Tekton?,Reinstall,Reinstall,Reinstall,NO ✓
+Pipelines,Pipelines-as-Code?,Reinstall,Reinstall,Reinstall,NO ✓
+Pipelines,Pipeline runs?,LOST,LOST,LOST,PRESERVED ✓
+Pipelines,Webhooks?,Reconfigure,Reconfigure,Reconfigure,NO ✓
+Ingress (66 routes),Routes intact?,NO (recreate),NO (recreate),NO (recreate),YES ✓
+Ingress (66 routes),SSL certs?,Regenerate,Regenerate,Regenerate,YES ✓
+Ingress (66 routes),DNS changes?,YES,YES,YES,NO ✓
+Ingress (66 routes),Custom domains?,Reconfigure,Reconfigure,Reconfigure,NO ✓
+Egress,Network policies (108)?,Recreate ALL,Recreate ALL,Recreate ALL,NO ✓
+Egress,Egress paths?,Reconfigure,Reconfigure,Reconfigure,NO ✓
+Egress,Firewall rules?,Reconfigure,Reconfigure,Reconfigure,NO ✓
+Egress,Egress nodes?,Reconfigure,Reconfigure,Reconfigure,NO ✓
+Secrets/Config,Secrets?,Recreate all,Recreate all,Recreate all,NO ✓
+Secrets/Config,ConfigMaps?,Recreate all,Recreate all,Recreate all,NO ✓
+Secrets/Config,PVCs?,Backup/restore,Backup/restore,Backup/restore,NO ✓
+Hardware,New servers?,YES (12 servers),YES (12 servers),YES (12 servers),YES (3 servers)
+Hardware,BMC/IPMI?,YES,YES,NO (Hyper-V mgmt),YES
+Hardware,Network config?,Full rebuild,Full rebuild,Full rebuild,Same VLAN
+Hardware,Storage config?,Local disks,Nutanix storage,Hyper-V VHDX,N/A
+Platform Features,Cloud provider?,NO,YES (Nutanix),NO,NO
+Platform Features,Dynamic storage?,NO (manual),YES (Nutanix),NO (manual),NO
+Platform Features,Load balancer?,Manual,YES (Nutanix),Manual,Manual
+Platform Features,Node hostname?,Manual,YES (Nutanix),Manual,Manual
+Platform Features,Autoscaling?,NO,YES,NO,NO
+Platform Features,Machine API?,NO,YES,NO,NO
+Platform Features,Install complexity?,HIGH,MODERATE,HIGH,MODERATE
+Platform Features,Lifecycle management?,HIGH (manual),MODERATE (automated),HIGH (manual),LOW-MOD (workers only)
+Platform Features,Support level?,FULL,FULL,PARTIAL (no Hyper-V help),FULL
+═══════════════════════════════════════════════════════════════════════════
+SCORING CRITERIA,,,,,,
+Risk (30%),Lower risk = higher score,1/10,1/10,1/10,10/10
+Effort (25%),Less effort = higher score,1/10,3/10,1/10,9/10
+Time (20%),Less time = higher score,2/10,4/10,2/10,9/10
+Savings (15%),More savings = higher score,10/10,10/10,10/10,3/10
+Support (10%),Full support = higher score,9/10,9/10,6/10,10/10
+═══════════════════════════════════════════════════════════════════════════
+WEIGHTED SCORE,,3.35/10,4.15/10,3.45/10,8.35/10
+═══════════════════════════════════════════════════════════════════════════
+PERCENTAGE,,33.5%,41.5%,34.5%,83.5%
+═══════════════════════════════════════════════════════════════════════════
+VERDICT,,NOT RECOMMENDED,NOT RECOMMENDED,NOT RECOMMENDED,RECOMMENDED ✓
