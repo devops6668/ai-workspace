@@ -1,0 +1,137 @@
+graph TB
+    subgraph Clients["Client Layer"]
+        direction LR
+        S3CLI["AWS S3 CLI / SDK"]
+        FUSE["FUSE Mount"]
+        WEBDAV["WebDAV Client"]
+        SFTP["SFTP Client"]
+        SPARK["Spark / Flink"]
+        TRINO["Trino / Doris"]
+        HADOOP["Hadoop / HBase"]
+    end
+
+    subgraph Gateway["Stateless Gateway Layer"]
+        direction LR
+        S3GW["S3 Gateway<br/>Port 8333<br/>IAM / STS / SSE"]
+        WEBDAVGW["WebDAV Gateway"]
+        SFTPGW["SFTP Server"]
+        HADOOPGW["HDFS Gateway"]
+        HTTPGW["HTTP REST API"]
+        ICEREST["Iceberg REST Catalog<br/>S3 Tables"]
+        FUSEGW["FUSE Mount"]
+    end
+
+    subgraph Filer["Filer Layer"]
+        direction LR
+        FILER1["Filer Server 1"]
+        FILER2["Filer Server 2"]
+        FILERN["Filer Server N"]
+    end
+
+    subgraph MetaStore["Metadata Store"]
+        direction LR
+        PG["PostgreSQL"]
+        MYSQL["MySQL"]
+        REDIS["Redis"]
+        CASS["Cassandra"]
+        MONGO["MongoDB"]
+        SQLITE["SQLite"]
+        OTHER["LevelDB / RocksDB<br/>etcd / TiDB ..."]
+    end
+
+    subgraph Master["Master Layer (Raft HA)"]
+        direction LR
+        M1["Master 1<br/>Leader"]
+        M2["Master 2<br/>Follower"]
+        M3["Master 3<br/>Follower"]
+    end
+
+    subgraph Volume["Volume Server Layer"]
+        direction LR
+        V1["Volume Server 1<br/>SSD"]
+        V2["Volume Server 2<br/>SSD"]
+        V3["Volume Server 3<br/>HDD"]
+        VN["Volume Server N<br/>HDD"]
+    end
+
+    subgraph Storage["Physical Storage"]
+        direction LR
+        DISK1["Append-Only<br/>Volume Files<br/>.dat + .idx"]
+        DISK2["Append-Only<br/>Volume Files<br/>.dat + .idx"]
+        DISK3["Append-Only<br/>Volume Files<br/>.dat + .idx"]
+        DISKN["Append-Only<br/>Volume Files<br/>.dat + .idx"]
+    end
+
+    subgraph Tiering["Data Tiering"]
+        direction LR
+        HOT["Hot Data<br/>Replicated<br/>Fast Writes"]
+        WARM["Warm Data<br/>Erasure Coded<br/>1.2x Overhead"]
+        COLD["Cold Data<br/>Cloud Tier<br/>S3 / GCS / Azure"]
+    end
+
+    subgraph Cloud["Cloud Storage Backend"]
+        direction LR
+        AWSS3["AWS S3"]
+        GCS["GCS"]
+        AZURE["Azure Blob"]
+        B2["Backblaze B2"]
+    end
+
+    S3CLI --> S3GW
+    FUSE --> FUSEGW
+    WEBDAV --> WEBDAVGW
+    SFTP --> SFTPGW
+    SPARK --> HADOOPGW
+    TRINO --> ICEREST
+    HADOOP --> HADOOPGW
+
+    S3GW --> FILER1
+    WEBDAVGW --> FILER2
+    SFTPGW --> FILERN
+    HADOOPGW --> FILER1
+    HTTPGW --> FILER2
+    ICEREST --> FILER1
+    FUSEGW --> FILERN
+
+    FILER1 --> PG
+    FILER1 --> REDIS
+    FILER2 --> MYSQL
+    FILERN --> CASS
+
+    FILER1 --> M1
+    FILER2 --> M2
+    FILERN --> M3
+    M1 <-.-> M2
+    M2 <-.-> M3
+    M1 <-.-> M3
+
+    M1 --> V1
+    M1 --> V2
+    M2 --> V3
+    M3 --> VN
+
+    V1 --> DISK1
+    V2 --> DISK2
+    V3 --> DISK3
+    VN --> DISKN
+
+    V1 --> HOT
+    V2 --> HOT
+    V3 --> WARM
+    VN --> WARM
+
+    WARM --> COLD
+    COLD --> AWSS3
+    COLD --> GCS
+    COLD --> AZURE
+    COLD --> B2
+
+    style Clients fill:#0c1222,stroke:#475569,stroke-width:2px,color:#e2e8f0
+    style Gateway fill:#0a2e3d,stroke:#22d3ee,stroke-width:2px,color:#cffafe
+    style Filer fill:#072e1f,stroke:#34d399,stroke-width:2px,color:#d1fae5
+    style MetaStore fill:#1e1040,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
+    style Master fill:#1a0a0a,stroke:#f87171,stroke-width:2px,color:#fecdd3
+    style Volume fill:#1a1a0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
+    style Storage fill:#1a1a1a,stroke:#94a3b8,stroke-width:2px,color:#f1f5f9
+    style Tiering fill:#1a0f05,stroke:#fb923c,stroke-width:2px,color:#ffedd5
+    style Cloud fill:#0a1628,stroke:#60a5fa,stroke-width:2px,color:#dbeafe
