@@ -1,0 +1,67 @@
+# requirements.txt with specific versions
+# Format: package==version
+
+# === JupyterHub / JupyterLab core ===
+jupyterlab>=4.4.0,<5.0.0
+jupyterhub>=5.5.0
+jupyter_server==2.20.0
+jupyter_core==5.8.1
+jupyter-server-proxy==4.4.0
+notebook==7.5.6
+jupyterlab-git==0.54.0
+jupyter-lsp>=2.2.2
+jupyter_scheduler
+
+# === Jupyter AI 3.x ===
+jupyter-ai[jupyternaut]==3.0.1
+jupyter-ai-persona-manager>=0.0.11,<0.1.0
+jupyter-ai-jupyternaut>=0.0.11,<0.1.0
+jupyter-ai-litellm>=0.0.2,<0.1.0
+
+# === LiteLLM & agent deps ===
+litellm>=1.0.0
+aiosqlite>=0.20.0
+langgraph-checkpoint-sqlite>=3.0.0
+secretstorage>=3.3.0
+
+# === Keyring (EncryptedKeyring — AES) ===
+keyring>=25.7.0
+keyrings.alt>=5.0.0
+pycryptodome>=3.20.0
+
+# === MCP ===
+fastmcp==3.2.0
+mcp>=1.28.1
+
+# === Build tools ===
+uv
+
+# === Security Patches (2026-09-01 vulnfix round) ===
+Brotli>=1.2.0
+GitPython==3.1.61
+Jinja2>=3.1.5
+pillow==12.3.0
+cryptography>=50.0.0
+fonttools>=4.60.2
+idna>=3.19
+setuptools>=84.0.0
+urllib3>=2.6.0
+pyarrow==23.0.1
+aiohttp>=3.13.3
+protobuf==5.29.6
+tornado==6.5.8
+wheel>=0.48.0
+bokeh==3.8.2
+distributed==2026.1.1
+mako>=1.4.1
+mistune>=3.3.4
+soupsieve>=2.9.2
+pyjwt==2.13.0
+nbconvert==7.17.1
+requests>=2.34.2
+h2>=4.4.1
+bleach>=6.4.0
+pygments>=2.21.0
+msgpack>=1.2.2
+jaraco-context>=6.1.2
+pip>=26.2.1
