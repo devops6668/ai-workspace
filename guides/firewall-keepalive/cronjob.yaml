@@ -22,12 +22,8 @@ spec:
           restartPolicy: Never
           containers:
           - name: keepalive
-            image: alpine:3.20
-            command: ["/bin/sh", "-c"]
-            args:
-            - |
-              apk add --no-cache curl openssl > /dev/null 2>&1
-              exec /bin/sh /scripts/keepalive.sh
+            image: quay.io/rke2/connection-keepalive:v1.0
+            command: ["/bin/sh", "/scripts/keepalive.sh"]
             volumeMounts:
             - name: scripts
               mountPath: /scripts
