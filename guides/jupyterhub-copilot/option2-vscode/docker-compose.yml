@@ -1,0 +1,29 @@
+# =============================================================================
+# Docker Compose for Local Testing
+# quay.io/rke2/jupyter-datascience:v1.0-ai
+# jupyter-ai v3.x + VS Code (code-server) + notebook-intelligence
+# =============================================================================
+
+services:
+  jupyter:
+    image: quay.io/rke2/jupyter-datascience:v1.0-ai
+    container_name: jupyter-datascience-ai
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      # AI Model Settings (Agnes AI / OpenAI-compatible)
+      - OPENAI_API_BASE=https://apihub.agnes-ai.com/v1
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - jupyter-data:/home/jovyan
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/api"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  jupyter-data:
+    driver: local
