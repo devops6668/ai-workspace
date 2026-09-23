@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: firewall-keepalive
+  namespace: default
+  labels:
+    app: firewall-keepalive
+spec:
+  schedule: "0 * * * *"          # 每小時整點
+  concurrencyPolicy: Forbid       # 不允許並行
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app: firewall-keepalive
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: keepalive
+            image: busybox:1.37
+            command: ["/bin/sh", "/scripts/keepalive.sh"]
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: endpoints
+              mountPath: /config
+              readOnly: true
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                cpu: 50m
+                memory: 32Mi
+          volumes:
+          - name: scripts
+            configMap:
+              name: firewall-keepalive-script
+              defaultMode: 0755
+          - name: endpoints
+            configMap:
+              name: firewall-keepalive-endpoints
